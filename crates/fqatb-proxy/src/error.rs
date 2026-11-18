@@ -20,8 +20,8 @@ pub(crate) enum Error {
     #[error("admin is not initialized")]
     AdminNotInitialized,
 
-    #[error("FQATB_ADMIN_PASSWORD must be set on first start-up to initialize the admin")]
-    AdminPasswordMissing,
+    #[error("admin is already initialized")]
+    AdminAlreadyInitialized,
 
     #[error("admin password must be at least {MIN_PASSWORD_LEN} characters long")]
     PasswordTooShort,

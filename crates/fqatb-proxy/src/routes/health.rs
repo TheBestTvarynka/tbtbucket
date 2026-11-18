@@ -44,14 +44,14 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_when_database_reachable() {
-        let state = Arc::new(ServerState::for_tests("a long passphrase").await);
+        let state = Arc::new(ServerState::for_tests().await);
 
         assert_eq!(get_health(state).await, (StatusCode::OK, "ok".to_owned()));
     }
 
     #[tokio::test]
     async fn unavailable_when_database_closed() {
-        let state = Arc::new(ServerState::for_tests("a long passphrase").await);
+        let state = Arc::new(ServerState::for_tests().await);
         state.db.close().await;
 
         assert_eq!(

@@ -13,6 +13,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::auth::{AuthSession, removal_cookie, session_cookie};
+use crate::services::MIN_PASSWORD_LEN;
 use crate::state::AppState;
 use crate::{Error, Result};
 
@@ -23,6 +24,7 @@ pub(super) const BASE_PATH: &str = "/webapp";
 pub(super) const HOME_PATH: &str = "/webapp/";
 pub(super) const LOGIN_PATH: &str = "/webapp/login";
 const LOGOUT_PATH: &str = "/webapp/logout";
+const SIGNUP_PATH: &str = "/webapp/signup";
 
 /// Routes of the admin panel.
 ///
@@ -31,8 +33,25 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route(BASE_PATH, get(|| async { Redirect::permanent(HOME_PATH) }))
         .route(HOME_PATH, get(home))
+        .route(SIGNUP_PATH, get(signup_page).post(signup))
         .route(LOGIN_PATH, get(login_page).post(login))
         .route(LOGOUT_PATH, post(logout))
+}
+
+#[derive(Template, WebTemplate)]
+#[template(path = "signup.html")]
+struct SignupPage {
+    min_password_len: usize,
+    error: Option<String>,
+}
+
+impl SignupPage {
+    fn new(error: Option<String>) -> Self {
+        Self {
+            min_password_len: MIN_PASSWORD_LEN,
+            error,
+        }
+    }
 }
 
 #[derive(Template, WebTemplate)]
@@ -46,6 +65,12 @@ struct LoginPage {
 struct HomePage;
 
 #[derive(Deserialize)]
+struct SignupForm {
+    password: Secret<String>,
+    password_confirmation: Secret<String>,
+}
+
+#[derive(Deserialize)]
 struct LoginForm {
     password: Secret<String>,
 }
@@ -54,13 +79,59 @@ async fn home(_session: AuthSession) -> HomePage {
     HomePage
 }
 
-async fn login_page() -> LoginPage {
-    LoginPage { error: None }
+/// Shows the sign-up form until the admin is initialized, and redirects to the login page afterwards.
+async fn signup_page(State(state): State<AppState>) -> Result<Response> {
+    if state.admin_service.admin_id().await?.is_some() {
+        return Ok(Redirect::to(LOGIN_PATH).into_response());
+    }
+
+    Ok(SignupPage::new(None).into_response())
+}
+
+/// Sets the admin password and sends the browser to the login page.
+///
+/// No session is issued here: the admin logs in with the new password like on any later visit.
+async fn signup(State(state): State<AppState>, Form(form): Form<SignupForm>) -> Result<Response> {
+    // Hashing is deliberately slow, so requests that cannot succeed are turned away before it.
+    if state.admin_service.admin_id().await?.is_some() {
+        return Ok(Redirect::to(LOGIN_PATH).into_response());
+    }
+
+    if form.password != form.password_confirmation {
+        let page = SignupPage::new(Some("Passwords do not match".to_owned()));
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response());
+    }
+
+    match state.admin_service.init(form.password).await {
+        Ok(admin_id) => {
+            info!(%admin_id, "Admin signed up");
+            Ok(Redirect::to(LOGIN_PATH).into_response())
+        }
+        Err(Error::PasswordTooShort) => {
+            let page = SignupPage::new(Some(format!(
+                "Password must be at least {MIN_PASSWORD_LEN} characters long"
+            )));
+            Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
+        }
+        // Another sign-up won the race.
+        Err(Error::AdminAlreadyInitialized) => Ok(Redirect::to(LOGIN_PATH).into_response()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Shows the login form once the admin is initialized, and redirects to the sign-up page before that.
+async fn login_page(State(state): State<AppState>) -> Result<Response> {
+    if state.admin_service.admin_id().await?.is_none() {
+        return Ok(Redirect::to(SIGNUP_PATH).into_response());
+    }
+
+    Ok(LoginPage { error: None }.into_response())
 }
 
 async fn login(State(state): State<AppState>, jar: CookieJar, Form(form): Form<LoginForm>) -> Result<Response> {
     let admin_id = match state.admin_service.authenticate(form.password).await {
         Ok(admin_id) => admin_id,
+        Err(Error::AdminNotInitialized) => return Ok(Redirect::to(SIGNUP_PATH).into_response()),
         Err(Error::InvalidCredentials) => {
             warn!("Rejected admin login with invalid password");
 
@@ -95,6 +166,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use axum::response::Response;
+    use secret::Secret;
     use tower::ServiceExt as _;
 
     use crate::routes::auth::COOKIE_NAME;
@@ -103,9 +175,21 @@ mod tests {
 
     const PASSWORD: &str = "correct horse battery staple";
 
-    async fn setup() -> (Router, AppState) {
-        let state = Arc::new(ServerState::for_tests(PASSWORD).await);
+    /// Builds an app whose admin is not initialized yet.
+    async fn setup_uninitialized() -> (Router, AppState) {
+        let state = Arc::new(ServerState::for_tests().await);
         (router(Arc::clone(&state)), state)
+    }
+
+    /// Builds an app whose admin password is [`PASSWORD`].
+    async fn setup() -> (Router, AppState) {
+        let (app, state) = setup_uninitialized().await;
+        state
+            .admin_service
+            .init(Secret::new(PASSWORD.to_owned()))
+            .await
+            .unwrap();
+        (app, state)
     }
 
     async fn send(app: &Router, request: Request<Body>) -> Response {
@@ -116,11 +200,22 @@ mod tests {
         Request::get(uri).body(Body::empty()).unwrap()
     }
 
-    fn login_request(password: &str) -> Request<Body> {
-        Request::post("/webapp/login")
+    fn form_request(uri: &str, body: &str) -> Request<Body> {
+        Request::post(uri)
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from(format!("password={}", password.replace(' ', "+"))))
+            .body(Body::from(body.replace(' ', "+")))
             .unwrap()
+    }
+
+    fn login_request(password: &str) -> Request<Body> {
+        form_request("/webapp/login", &format!("password={password}"))
+    }
+
+    fn signup_request(password: &str, confirmation: &str) -> Request<Body> {
+        form_request(
+            "/webapp/signup",
+            &format!("password={password}&password_confirmation={confirmation}"),
+        )
     }
 
     fn with_cookie(builder: axum::http::request::Builder, cookie: &str) -> Request<Body> {
@@ -231,5 +326,72 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&response), "/webapp/login");
+    }
+
+    #[tokio::test]
+    async fn uninitialized_admin_is_sent_to_signup() {
+        let (app, _state) = setup_uninitialized().await;
+
+        let response = send(&app, get("/webapp/login")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&response), "/webapp/signup");
+
+        let response = send(&app, login_request(PASSWORD)).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&response), "/webapp/signup");
+
+        assert_eq!(send(&app, get("/webapp/signup")).await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn signup_rejects_invalid_passwords() {
+        let (app, state) = setup_uninitialized().await;
+
+        let mismatch = send(&app, signup_request(PASSWORD, "another long passphrase")).await;
+        assert_eq!(mismatch.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let too_short = send(&app, signup_request("short", "short")).await;
+        assert_eq!(too_short.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        assert!(state.admin_service.admin_id().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn signup_then_login() {
+        let (app, state) = setup_uninitialized().await;
+
+        let response = send(&app, signup_request(PASSWORD, PASSWORD)).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&response), "/webapp/login");
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        assert_eq!(state.db.session_count().await, 0);
+
+        let response = send(&app, login_request(PASSWORD)).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let cookie = session_cookie(&response);
+
+        let response = send(&app, with_cookie(Request::get("/webapp/"), &cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn signup_closed_once_initialized() {
+        let (app, state) = setup().await;
+        let admin_id = state.admin_service.admin_id().await.unwrap();
+
+        let response = send(&app, get("/webapp/signup")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&response), "/webapp/login");
+
+        let other = "another long passphrase";
+        let response = send(&app, signup_request(other, other)).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(location(&response), "/webapp/login");
+
+        assert_eq!(state.admin_service.admin_id().await.unwrap(), admin_id);
+        assert_eq!(
+            send(&app, login_request(other)).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

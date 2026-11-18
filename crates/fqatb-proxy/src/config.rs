@@ -17,8 +17,6 @@ pub(crate) struct Config {
     pub(crate) database_url: String,
     /// `FQATB_ENCRYPTION_KEY`, given as 64 hex characters.
     pub(crate) encryption_key: Secret<[u8; KEY_LEN]>,
-    /// `FQATB_ADMIN_PASSWORD`, only used to initialize the admin on first start-up.
-    pub(crate) admin_password: Option<Secret<String>>,
 }
 
 impl Config {
@@ -39,13 +37,10 @@ impl Config {
             key
         };
 
-        let admin_password = env::var("FQATB_ADMIN_PASSWORD").ok().map(Secret::new);
-
         Ok(Self {
             listen_addr,
             database_url,
             encryption_key,
-            admin_password,
         })
     }
 }

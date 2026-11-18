@@ -5,7 +5,7 @@ use argon2::password_hash::{self, PasswordHasher as _, PasswordVerifier as _};
 use secret::Secret;
 use uuid::Uuid;
 
-use crate::db::{Admin, AdminDb};
+use crate::db::{Admin, AdminDb, DbError};
 use crate::{Error, Result};
 
 /// Shortest passphrase accepted when the admin is initialized.
@@ -31,6 +31,8 @@ impl<D: AdminDb> AdminService<D> {
     }
 
     /// Creates the admin with a fresh random ID and the Argon2id hash of `password`.
+    ///
+    /// Fails with [`Error::AdminAlreadyInitialized`] if the admin already exists.
     pub(crate) async fn init(&self, password: Secret<String>) -> Result<Uuid> {
         if !(MIN_PASSWORD_LEN <= password.as_ref().chars().count()) {
             return Err(Error::PasswordTooShort);
@@ -48,7 +50,10 @@ impl<D: AdminDb> AdminService<D> {
             id: Uuid::new_v4(),
             password_hash,
         };
-        self.db.init_admin(&admin).await?;
+        self.db.init_admin(&admin).await.map_err(|error| match error {
+            DbError::AdminAlreadyExists => Error::AdminAlreadyInitialized,
+            error => Error::Db(error),
+        })?;
 
         Ok(admin.id)
     }
@@ -100,6 +105,18 @@ mod tests {
             service.authenticate(password("a wrong passphrase")).await,
             Err(Error::InvalidCredentials)
         ));
+    }
+
+    #[tokio::test]
+    async fn init_only_once() {
+        let service = service().await;
+        let id = service.init(password("a long passphrase")).await.unwrap();
+
+        assert!(matches!(
+            service.init(password("another long passphrase")).await,
+            Err(Error::AdminAlreadyInitialized)
+        ));
+        assert_eq!(service.authenticate(password("a long passphrase")).await.unwrap(), id);
     }
 
     #[tokio::test]

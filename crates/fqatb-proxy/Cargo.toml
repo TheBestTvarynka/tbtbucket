@@ -7,33 +7,45 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-aes-gcm = { version = "0.11.1", features = ["zeroize"] }
-anyhow = "1.0.104"
-argon2 = "0.6.0"
-askama = "0.16.1"
-askama_web = { version = "0.16.0", features = ["axum-0.8"] }
-axum = "0.8.9"
-axum-extra = { version = "0.12.6", features = ["cookie"] }
-base64 = "0.23.1"
-getrandom = "0.4.3"
-hex = "0.4.3"
-hkdf = "0.13.0"
-secret = { git = "https://github.com/Devolutions/sspi-rs", rev = "2f447436fe6ff696aab9284bd18ab5f6410de5c1", version = "0.1.0", features = ["serde"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-sha2 = "0.11.1"
-sqlx = { version = "0.9.1", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
-thiserror = "2.0.21"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Db
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
+
+# Web
+askama = "0.16"
+askama_web = { version = "0.16", features = ["axum-0.8"] }
+axum = "0.8"
+axum-extra = { version = "0.12", features = ["cookie"] }
+tower-http = { version = "0.7", features = ["trace"] }
+
+# Crypto
+aes-gcm = { version = "0.11", features = ["zeroize"] }
+argon2 = "0.6"
+getrandom = "0.4"
+hkdf = "0.13"
+secret = { git = "https://github.com/Devolutions/sspi-rs", rev = "2f447436fe6ff696aab9284bd18ab5f6410de5c1", version = "0.1", features = ["serde"] }
+sha2 = "0.11"
+
+# Utils
+anyhow = "1.0"
+base64 = "0.23"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
 time = "0.3"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tower-http = { version = "0.7.1", features = ["trace"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-uuid = { version = "1.29.3", features = ["v4", "serde"] }
+uuid = { version = "1.29", features = ["serde", "v4"] }
+
+# Runtime
+tokio = { version = "1.54", features = ["macros", "net", "rt-multi-thread", "signal"] }
 
 [dev-dependencies]
-http-body-util = "0.1.5"
-tower = { version = "0.5.3", features = ["util"] }
+# Web
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

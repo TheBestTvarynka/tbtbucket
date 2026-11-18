@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Sign up{% endblock %}
+
+{% block body %}
+<main class="container">
+  <article>
+    <header>
+      <h1>FGAT Bitbucket</h1>
+      <p>Set the admin password. It is the only way to sign in to this panel.</p>
+    </header>
+    <form method="post" action="/webapp/signup">
+      <label>
+        Password
+        <input
+          type="password"
+          name="password"
+          autocomplete="new-password"
+          minlength="{{ min_password_len }}"
+          required
+          autofocus
+          aria-describedby="password-hint"
+        >
+        <small id="password-hint">At least {{ min_password_len }} characters.</small>
+      </label>
+      <label>
+        Confirm password
+        <input
+          type="password"
+          name="password_confirmation"
+          autocomplete="new-password"
+          minlength="{{ min_password_len }}"
+          required
+          {% if let Some(error) = error %}aria-invalid="true" aria-describedby="signup-error"{% endif %}
+        >
+        {% if let Some(error) = error %}<small id="signup-error">{{ error }}</small>{% endif %}
+      </label>
+      <button type="submit">Sign up</button>
+    </form>
+  </article>
+</main>
+{% endblock %}
