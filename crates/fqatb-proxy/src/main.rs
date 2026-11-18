@@ -1,46 +1,34 @@
-mod app;
-mod health;
+mod config;
+mod crypto;
+mod db;
+mod error;
+mod logging;
+mod routes;
+mod services;
+mod state;
 
-use std::env;
-use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Context as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::net::TcpListener;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
-const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
-const DEFAULT_DATABASE_URL: &str = "sqlite://fqatb.db";
+use crate::config::Config;
+pub(crate) use crate::error::{Error, Result};
+use crate::state::ServerState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    logging::init_tracing();
 
-    let listen_addr: SocketAddr = env::var("FQATB_LISTEN_ADDR")
-        .as_deref()
-        .unwrap_or(DEFAULT_LISTEN_ADDR)
-        .parse()
-        .context("invalid listen address")?;
+    let config = Config::from_env()?;
+    let listen_addr = config.listen_addr;
 
-    let database_url =
-        env::var("FQATB_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
-
-    let db = {
-        let options = database_url
-            .parse::<SqliteConnectOptions>()
-            .context("invalid database URL")?
-            .create_if_missing(true);
-
-        SqlitePoolOptions::new()
-            .connect_with(options)
+    let state = Arc::new(
+        ServerState::new(config)
             .await
-            .context("failed to open database")?
-    };
+            .context("failed to initialize server state")?,
+    );
 
     let listener = TcpListener::bind(listen_addr)
         .await
@@ -48,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!(%listen_addr, "Listening");
 
-    axum::serve(listener, app::router(app::AppState { db: db.clone() }))
+    axum::serve(listener, routes::router(Arc::clone(&state)))
         .with_graceful_shutdown(async {
             // If the signal handler cannot be installed, the server keeps running until killed.
             if let Err(error) = tokio::signal::ctrl_c().await {
@@ -59,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("server failed")?;
 
-    db.close().await;
+    state.db.close().await;
 
     info!("Shut down");
 

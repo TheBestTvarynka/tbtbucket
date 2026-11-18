@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Log in{% endblock %}
+
+{% block body %}
+<main class="container">
+  <article>
+    <header>
+      <h1>FGAT Bitbucket</h1>
+    </header>
+    <form method="post" action="/webapp/login">
+      <label>
+        Password
+        <input
+          type="password"
+          name="password"
+          autocomplete="current-password"
+          required
+          autofocus
+          {% if let Some(error) = error %}aria-invalid="true" aria-describedby="login-error"{% endif %}
+        >
+        {% if let Some(error) = error %}<small id="login-error">{{ error }}</small>{% endif %}
+      </label>
+      <button type="submit">Log in</button>
+    </form>
+  </article>
+</main>
+{% endblock %}

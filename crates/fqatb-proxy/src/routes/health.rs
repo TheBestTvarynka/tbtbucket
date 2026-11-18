@@ -2,16 +2,17 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use tracing::warn;
 
-use crate::app::AppState;
+use crate::error::report;
+use crate::state::AppState;
 
 /// Reports whether the proxy can serve requests.
 ///
 /// Returns `200 OK` when the database answers a trivial query, and `503 Service Unavailable` otherwise.
-pub(crate) async fn health(State(state): State<AppState>) -> (StatusCode, &'static str) {
-    match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => (StatusCode::OK, "ok"),
+pub(super) async fn health(State(state): State<AppState>) -> (StatusCode, &'static str) {
+    match state.db.ping().await {
+        Ok(()) => (StatusCode::OK, "ok"),
         Err(error) => {
-            warn!(%error, "Database health check failed");
+            warn!(error = report(&error), "Database health check failed");
             (StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
         }
     }
@@ -19,16 +20,18 @@ pub(crate) async fn health(State(state): State<AppState>) -> (StatusCode, &'stat
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt as _;
-    use sqlx::SqlitePool;
     use tower::ServiceExt as _;
 
-    use crate::app::{AppState, router};
+    use crate::routes::router;
+    use crate::state::{AppState, ServerState};
 
-    async fn get_health(db: SqlitePool) -> (StatusCode, String) {
-        let response = router(AppState { db })
+    async fn get_health(state: AppState) -> (StatusCode, String) {
+        let response = router(state)
             .oneshot(Request::get("/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -41,22 +44,19 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_when_database_reachable() {
-        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let state = Arc::new(ServerState::for_tests("a long passphrase").await);
 
-        assert_eq!(get_health(db).await, (StatusCode::OK, "ok".to_owned()));
+        assert_eq!(get_health(state).await, (StatusCode::OK, "ok".to_owned()));
     }
 
     #[tokio::test]
     async fn unavailable_when_database_closed() {
-        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        db.close().await;
+        let state = Arc::new(ServerState::for_tests("a long passphrase").await);
+        state.db.close().await;
 
         assert_eq!(
-            get_health(db).await,
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "database unavailable".to_owned()
-            )
+            get_health(state).await,
+            (StatusCode::SERVICE_UNAVAILABLE, "database unavailable".to_owned())
         );
     }
 }

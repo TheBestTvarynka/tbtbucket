@@ -12,3 +12,5 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# STYLE.md states checks positively (`!(idx < len)`), which this lint rewrites.
+nonminimal_bool = "allow"
