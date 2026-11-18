@@ -167,90 +167,16 @@ async fn logout(State(state): State<AppState>, auth: AuthSession, jar: CookieJar
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
-    use axum::response::Response;
-    use secret::Secret;
-    use tower::ServiceExt as _;
 
-    use crate::routes::auth::COOKIE_NAME;
-    use crate::routes::router;
-    use crate::state::{AppState, ServerState};
-
-    const PASSWORD: &str = "s3cret!pass";
-
-    /// Builds an app whose admin is not initialized yet.
-    async fn setup_uninitialized() -> (Router, AppState) {
-        let state = Arc::new(ServerState::for_tests().await);
-        (router(Arc::clone(&state)), state)
-    }
-
-    /// Builds an app whose admin password is [`PASSWORD`].
-    async fn setup() -> (Router, AppState) {
-        let (app, state) = setup_uninitialized().await;
-        state
-            .admin_service
-            .init(Secret::new(PASSWORD.to_owned()))
-            .await
-            .unwrap();
-        (app, state)
-    }
-
-    async fn send(app: &Router, request: Request<Body>) -> Response {
-        app.clone().oneshot(request).await.unwrap()
-    }
-
-    fn get(uri: &str) -> Request<Body> {
-        Request::get(uri).body(Body::empty()).unwrap()
-    }
-
-    fn form_request(uri: &str, body: &str) -> Request<Body> {
-        Request::post(uri)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from(body.replace(' ', "+")))
-            .unwrap()
-    }
-
-    fn login_request(password: &str) -> Request<Body> {
-        form_request("/webapp/login", &format!("password={password}"))
-    }
+    use crate::routes::testing::*;
 
     fn signup_request(password: &str, confirmation: &str) -> Request<Body> {
         form_request(
             "/webapp/signup",
-            &format!("password={password}&password_confirmation={confirmation}"),
+            &[("password", password), ("password_confirmation", confirmation)],
         )
-    }
-
-    fn with_cookie(builder: axum::http::request::Builder, cookie: &str) -> Request<Body> {
-        builder
-            .header(header::COOKIE, format!("{COOKIE_NAME}={cookie}"))
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    fn session_cookie(response: &Response) -> String {
-        let set_cookie = response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
-
-        assert!(set_cookie.contains("Path=/webapp"));
-        assert!(set_cookie.contains("HttpOnly"));
-        assert!(set_cookie.contains("Secure"));
-        assert!(set_cookie.contains("SameSite=Strict"));
-
-        set_cookie
-            .strip_prefix(&format!("{COOKIE_NAME}="))
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned()
-    }
-
-    fn location(response: &Response) -> &str {
-        response.headers().get(header::LOCATION).unwrap().to_str().unwrap()
     }
 
     #[tokio::test]
@@ -314,6 +240,9 @@ mod tests {
 
         let response = send(&app, with_cookie(Request::get("/webapp/"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
+        let home = body_text(response).await;
+        assert!(home.contains(r#"<a href="/webapp/bitbucket_tokens">/bitbucket_tokens</a>"#));
+        assert!(home.contains(r#"action="/webapp/logout""#));
 
         let response = send(&app, with_cookie(Request::post("/webapp/logout"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);

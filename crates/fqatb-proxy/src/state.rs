@@ -6,13 +6,14 @@ use crate::Result;
 use crate::config::Config;
 use crate::crypto::Cipher;
 use crate::db::Db;
-use crate::services::{AdminService, SessionService};
+use crate::services::{AdminService, BitbucketTokenService, SessionService};
 
 /// Everything request handlers need, built once at start-up.
 pub(crate) struct State<D> {
     pub(crate) db: Arc<D>,
     pub(crate) admin_service: AdminService<D>,
     pub(crate) session_service: SessionService<D>,
+    pub(crate) bitbucket_token_service: BitbucketTokenService<D>,
 }
 
 pub(crate) type ServerState = State<Db>;
@@ -40,6 +41,7 @@ impl ServerState {
         let state = Self {
             admin_service: AdminService::new(Arc::clone(&db)),
             session_service: SessionService::new(Arc::clone(&db), session_cipher),
+            bitbucket_token_service: BitbucketTokenService::new(Arc::clone(&db)),
             db,
         };
 
@@ -66,6 +68,7 @@ impl ServerState {
         Self {
             admin_service: AdminService::new(Arc::clone(&db)),
             session_service: SessionService::new(Arc::clone(&db), Cipher::for_sessions(&master_key)),
+            bitbucket_token_service: BitbucketTokenService::new(Arc::clone(&db)),
             db,
         }
     }

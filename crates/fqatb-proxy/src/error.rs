@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::crypto::EncryptError;
 use crate::db::DbError;
-use crate::services::PasswordRequirement;
+use crate::services::{BitbucketTokenRejection, PasswordRequirement};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -28,6 +28,9 @@ pub(crate) enum Error {
 
     #[error("password hashing failed")]
     PasswordHash(#[source] argon2::password_hash::Error),
+
+    #[error("invalid Bitbucket token")]
+    InvalidBitbucketToken(#[source] BitbucketTokenRejection),
 
     #[error("failed to encrypt session token")]
     SessionToken(#[source] EncryptError),

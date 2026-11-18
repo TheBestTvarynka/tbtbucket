@@ -22,4 +22,6 @@ Keep the encryption key: losing or changing it invalidates every encrypted value
 The admin panel is served under `/webapp/`.
 On first start-up, open `/webapp/signup` to set the admin password, then log in with it at `/webapp/login`.
 Until the password is set, anyone who can reach the panel can claim it, so keep the proxy private until then.
-Its session cookie is marked `Secure`, so the panel must be served over HTTPS or from `localhost`.
+Its actions are served under `/fgatbapi/`, for example Bitbucket token management at `/webapp/bitbucket_tokens`.
+The session cookie covers both prefixes, so it is scoped to `/`.
+It is marked `Secure`, so the panel must be served over HTTPS or from `localhost`.

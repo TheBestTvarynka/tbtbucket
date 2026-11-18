@@ -24,8 +24,17 @@ pub(crate) enum DbError {
     #[error("admin already exists")]
     AdminAlreadyExists,
 
+    #[error("Bitbucket token name is already taken")]
+    BitbucketTokenNameTaken,
+
     #[error("invalid {0} ID")]
     InvalidId(&'static str, #[source] uuid::Error),
+
+    #[error("invalid {0} timestamp")]
+    InvalidTimestamp(&'static str, #[source] time::error::Parse),
+
+    #[error("failed to format {0} timestamp")]
+    FormatTimestamp(&'static str, #[source] time::error::Format),
 
     #[error("failed to serialize {0}")]
     Serialize(&'static str, #[source] serde_json::Error),
@@ -64,4 +73,18 @@ pub(crate) trait SessionDb: Send + Sync {
 
     /// Removes every session that is expired at `now` (Unix seconds) or cannot be decrypted.
     async fn remove_expired_sessions(&self, now: u64) -> Result<(), DbError>;
+}
+
+/// Storage of Bitbucket access tokens.
+pub(crate) trait BitbucketTokenDb: Send + Sync {
+    /// Stores the token.
+    ///
+    /// Fails with [`DbError::BitbucketTokenNameTaken`] if a token with the same name exists.
+    async fn add_bitbucket_token(&self, token: &BitbucketToken) -> Result<(), DbError>;
+
+    /// Returns all tokens ordered by name, without their values.
+    async fn bitbucket_tokens(&self) -> Result<Vec<BitbucketTokenSummary>, DbError>;
+
+    /// Removes the token and returns whether it existed.
+    async fn remove_bitbucket_token(&self, id: Uuid) -> Result<bool, DbError>;
 }

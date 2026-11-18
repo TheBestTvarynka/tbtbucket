@@ -3,19 +3,6 @@
 {% block title %}Home{% endblock %}
 
 {% block body %}
-<header class="container">
-  <nav>
-    <ul>
-      <li><strong>FGAT Bitbucket</strong></li>
-    </ul>
-    <ul>
-      <li>
-        <form method="post" action="/webapp/logout">
-          <button type="submit" class="secondary outline">Log out</button>
-        </form>
-      </li>
-    </ul>
-  </nav>
-</header>
-<main class="container"></main>
+{% include "partials/header.html" %}
+<main class="container app-page"></main>
 {% endblock %}

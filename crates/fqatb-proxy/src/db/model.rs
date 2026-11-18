@@ -1,4 +1,6 @@
+use secret::Secret;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -22,4 +24,24 @@ impl Session {
     pub(crate) fn is_expired(&self, now: u64) -> bool {
         !(now < self.expires_at)
     }
+}
+
+/// A Bitbucket access token, with its value decrypted.
+#[derive(Debug)]
+pub(crate) struct BitbucketToken {
+    pub(crate) id: Uuid,
+    /// Unique and immutable after creation.
+    pub(crate) name: String,
+    pub(crate) token: Secret<String>,
+    /// When the token was added, stored in UTC with whole-second precision.
+    pub(crate) created_at: OffsetDateTime,
+}
+
+/// A Bitbucket access token without its value.
+#[derive(Debug)]
+pub(crate) struct BitbucketTokenSummary {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    /// When the token was added, in UTC.
+    pub(crate) created_at: OffsetDateTime,
 }

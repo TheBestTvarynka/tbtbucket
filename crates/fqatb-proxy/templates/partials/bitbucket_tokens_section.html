@@ -1,0 +1,24 @@
+<section id="bitbucket-tokens">
+  <form hx-post="/fgatbapi/bitbucket_tokens" hx-target="#bitbucket-tokens" hx-swap="outerHTML">
+    <div class="inline-form">
+      <label>
+        Name
+        <input
+          name="name"
+          value="{{ name }}"
+          maxlength="{{ max_name_len }}"
+          autocomplete="off"
+          required
+          {% if error.is_some() %}aria-invalid="true" aria-describedby="add-token-error"{% endif %}
+        >
+      </label>
+      <label>
+        Token
+        <input type="password" name="token" autocomplete="off" required>
+      </label>
+      <button type="submit">Add token</button>
+    </div>
+    {% if let Some(error) = error %}<small id="add-token-error" class="form-error">{{ error }}</small>{% endif %}
+  </form>
+  {% include "partials/bitbucket_tokens_list.html" %}
+</section>

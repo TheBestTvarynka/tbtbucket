@@ -4,15 +4,28 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
+    <!-- Validation errors come back as 422 with a fragment to show, so htmx swaps them in like successful responses. -->
+    <meta
+      name="htmx-config"
+      content='{"responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "422", "swap": true}, {"code": "[45]..", "swap": false, "error": true}]}'
+    >
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css"
       integrity="sha384-L1dWfspMTHU/ApYnFiMz2QID/PlP1xCW9visvBdbEkOLkSSWsP6ZJWhPw6apiXxU"
       crossorigin="anonymous"
     >
+    <script
+      src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"
+      integrity="sha384-2OatzQy1H+Zd/IIrjr1TcuDGqLXeHhbooAyJY1KdQMKnr4LZ22k31GBLdYKHmVjg"
+      crossorigin="anonymous"
+    ></script>
     <style>
-      /* Compact form controls: Pico's defaults are sized for touch-first landing pages. */
       :root {
+        /* Pico grows the root font size up to 131% on wide screens, which inflates every rem-based size. */
+        --pico-font-size: 100%;
+
+        /* Compact form controls: Pico's defaults are sized for touch-first landing pages. */
         --fgatb-control-font-size: 0.875rem;
         --pico-form-element-spacing-vertical: 0.375rem;
         --pico-form-element-spacing-horizontal: 0.75rem;
@@ -38,10 +51,102 @@
         );
       }
 
+      /* Pages behind the login share one readable column for the header and the content. */
+      .container.app-page {
+        max-width: 50rem;
+      }
+
       /* Login and sign-up hold a single short form, so the card is kept narrow and centered. */
       .container.form-page {
         max-width: 26rem;
         padding-block: 4rem;
+      }
+
+      /* Navigation items never wrap; on phones they sit closer together to fit on one line. */
+      header nav li {
+        white-space: nowrap;
+      }
+
+      @media (max-width: 575px) {
+        header nav li {
+          padding-inline: 0.375rem;
+        }
+      }
+
+      /* A form inside the navigation bar must not add Pico's bottom margin. */
+      .nav-form,
+      .nav-form button {
+        margin: 0;
+      }
+
+      /* Fields and their submit button on one row, aligned on the bottom edge. */
+      .inline-form {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 0.75rem;
+        align-items: end;
+        margin-bottom: var(--pico-spacing);
+      }
+
+      .inline-form label,
+      .inline-form input,
+      .inline-form button {
+        margin-bottom: 0;
+      }
+
+      @media (max-width: 575px) {
+        .inline-form {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .form-error {
+        display: block;
+        margin-bottom: var(--pico-spacing);
+        color: var(--pico-del-color);
+      }
+
+      /* Row action buttons hug the right edge and keep the table compact. */
+      .row-actions {
+        width: 1%;
+        white-space: nowrap;
+        text-align: right;
+      }
+
+      .row-actions button {
+        margin: 0;
+        padding: 0.125rem 0.5rem;
+        font-size: 0.8125rem;
+      }
+
+      /* Destructive actions are red, outlined at rest and filled on hover. */
+      :root {
+        --fgatb-danger: #d93526;
+        --fgatb-danger-hover: #b5291c;
+      }
+
+      button.outline.danger {
+        --pico-color: var(--fgatb-danger);
+        --pico-border-color: var(--fgatb-danger);
+      }
+
+      button.outline.danger:is(:hover, :active, :focus) {
+        --pico-color: #fff;
+        --pico-background-color: var(--fgatb-danger-hover);
+        --pico-border-color: var(--fgatb-danger-hover);
+      }
+
+      button.outline.danger:focus-visible {
+        --pico-box-shadow: 0 0 0 var(--pico-outline-width) rgba(217, 53, 38, 0.5);
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
       }
     </style>
     <title>{% block title %}{% endblock %} · FGAT Bitbucket</title>
