@@ -1,4 +1,5 @@
 # fgat-bitbucket
+
 Missing fine-frained access tokens for Bitckuket
 
 ## Running
@@ -10,9 +11,9 @@ The proxy is configured through environment variables:
 | `FQATB_ENCRYPTION_KEY` | yes | 32-byte master key as 64 hex characters, for example from `openssl rand -hex 32`. The database and session encryption keys are derived from it. |
 | `FQATB_LISTEN_ADDR` | no | Address to listen on, `127.0.0.1:8080` by default. |
 | `FQATB_DATABASE_URL` | no | SQLite database URL, `sqlite://fqatb.db` by default. The file is created and migrated on start-up. |
-| `RUST_LOG` | no | Log filter, `info` by default. |
+| `FGATB_LOGGING` | no | Log filter in the [`EnvFilter` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives), `trace` by default. For example, `info` or `info,fqatb_proxy=debug`. |
 
-```sh
+```bash
 FQATB_ENCRYPTION_KEY=$(openssl rand -hex 32) cargo run
 ```
 
