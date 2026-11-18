@@ -3,7 +3,7 @@
 {% block title %}Sign up{% endblock %}
 
 {% block body %}
-<main class="container">
+<main class="container form-page">
   <article>
     <header>
       <h1>FGAT Bitbucket</h1>
@@ -21,7 +21,7 @@
           autofocus
           aria-describedby="password-hint"
         >
-        <small id="password-hint">At least {{ min_password_len }} characters.</small>
+        <small id="password-hint">At least {{ min_password_len }} characters, including a digit and a special character such as ! or #.</small>
       </label>
       <label>
         Confirm password

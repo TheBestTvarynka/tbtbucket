@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::crypto::EncryptError;
 use crate::db::DbError;
-use crate::services::MIN_PASSWORD_LEN;
+use crate::services::PasswordRequirement;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -23,8 +23,8 @@ pub(crate) enum Error {
     #[error("admin is already initialized")]
     AdminAlreadyInitialized,
 
-    #[error("admin password must be at least {MIN_PASSWORD_LEN} characters long")]
-    PasswordTooShort,
+    #[error("admin password is too weak")]
+    WeakPassword(#[source] PasswordRequirement),
 
     #[error("password hashing failed")]
     PasswordHash(#[source] argon2::password_hash::Error),

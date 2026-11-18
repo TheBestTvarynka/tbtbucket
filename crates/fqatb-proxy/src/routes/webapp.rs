@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::auth::{AuthSession, removal_cookie, session_cookie};
-use crate::services::MIN_PASSWORD_LEN;
+use crate::services::{MIN_PASSWORD_LEN, PasswordRequirement};
 use crate::state::AppState;
 use crate::{Error, Result};
 
@@ -107,10 +107,17 @@ async fn signup(State(state): State<AppState>, Form(form): Form<SignupForm>) -> 
             info!(%admin_id, "Admin signed up");
             Ok(Redirect::to(LOGIN_PATH).into_response())
         }
-        Err(Error::PasswordTooShort) => {
-            let page = SignupPage::new(Some(format!(
-                "Password must be at least {MIN_PASSWORD_LEN} characters long"
-            )));
+        Err(Error::WeakPassword(requirement)) => {
+            let message = match requirement {
+                PasswordRequirement::MinLength => {
+                    format!("Password must be at least {MIN_PASSWORD_LEN} characters long")
+                }
+                PasswordRequirement::Digit => "Password must contain at least one digit".to_owned(),
+                PasswordRequirement::SpecialCharacter => {
+                    "Password must contain at least one special character, such as ! or #".to_owned()
+                }
+            };
+            let page = SignupPage::new(Some(message));
             Ok((StatusCode::UNPROCESSABLE_ENTITY, page).into_response())
         }
         // Another sign-up won the race.
@@ -173,7 +180,7 @@ mod tests {
     use crate::routes::router;
     use crate::state::{AppState, ServerState};
 
-    const PASSWORD: &str = "correct horse battery staple";
+    const PASSWORD: &str = "s3cret!pass";
 
     /// Builds an app whose admin is not initialized yet.
     async fn setup_uninitialized() -> (Router, AppState) {
@@ -347,11 +354,13 @@ mod tests {
     async fn signup_rejects_invalid_passwords() {
         let (app, state) = setup_uninitialized().await;
 
-        let mismatch = send(&app, signup_request(PASSWORD, "another long passphrase")).await;
+        let mismatch = send(&app, signup_request(PASSWORD, "0ther!pass")).await;
         assert_eq!(mismatch.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        let too_short = send(&app, signup_request("short", "short")).await;
-        assert_eq!(too_short.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        for weak in ["ab1!", "nodigits!", "nospecial1"] {
+            let response = send(&app, signup_request(weak, weak)).await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{weak}");
+        }
 
         assert!(state.admin_service.admin_id().await.unwrap().is_none());
     }
@@ -383,7 +392,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&response), "/webapp/login");
 
-        let other = "another long passphrase";
+        let other = "0ther!pass";
         let response = send(&app, signup_request(other, other)).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&response), "/webapp/login");

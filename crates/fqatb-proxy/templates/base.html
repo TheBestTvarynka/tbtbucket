@@ -10,6 +10,40 @@
       integrity="sha384-L1dWfspMTHU/ApYnFiMz2QID/PlP1xCW9visvBdbEkOLkSSWsP6ZJWhPw6apiXxU"
       crossorigin="anonymous"
     >
+    <style>
+      /* Compact form controls: Pico's defaults are sized for touch-first landing pages. */
+      :root {
+        --fgatb-control-font-size: 0.875rem;
+        --pico-form-element-spacing-vertical: 0.375rem;
+        --pico-form-element-spacing-horizontal: 0.75rem;
+      }
+
+      input,
+      select,
+      textarea,
+      button,
+      [type=submit],
+      [type=reset],
+      [type=button],
+      [role=button] {
+        font-size: var(--fgatb-control-font-size);
+      }
+
+      /* Pico derives the input height from a 1rem font, so it is recomputed for the smaller font. */
+      input:not([type=checkbox], [type=radio], [type=range]) {
+        height: calc(
+          var(--fgatb-control-font-size) * var(--pico-line-height)
+          + var(--pico-form-element-spacing-vertical) * 2
+          + var(--pico-border-width) * 2
+        );
+      }
+
+      /* Login and sign-up hold a single short form, so the card is kept narrow and centered. */
+      .container.form-page {
+        max-width: 26rem;
+        padding-block: 4rem;
+      }
+    </style>
     <title>{% block title %}{% endblock %} · FGAT Bitbucket</title>
   </head>
   <body>
