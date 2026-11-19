@@ -1,0 +1,400 @@
+//! Access tokens issued by the proxy.
+//!
+//! Format: `fgatb_` followed by unpadded URL-safe base64 of `id (16) ‖ secret (32) ‖ HMAC-SHA256(id ‖ secret) (32)`.
+//! See the Access tokens section of `docs/access-model.md` for the reasoning behind each part.
+
+use std::sync::Arc;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use secret::Secret;
+use sha2::{Digest as _, Sha256};
+use subtle::ConstantTimeEq as _;
+use time::OffsetDateTime;
+use tracing::debug;
+use uuid::Uuid;
+
+use crate::crypto::{TOKEN_TAG_LEN, TokenMac};
+use crate::db::{AccessToken, AccessTokenDb, AccessTokenSummary, DbError};
+use crate::policy::Policy;
+use crate::{Error, Result};
+
+/// Prefix of every access token, which also lets secret scanners recognize them.
+pub(crate) const ACCESS_TOKEN_PREFIX: &str = "fgatb_";
+
+/// Longest accepted access token name, in characters.
+pub(crate) const MAX_ACCESS_TOKEN_NAME_LEN: usize = 100;
+
+const ID_LEN: usize = 16;
+const SECRET_LEN: usize = 32;
+const PAYLOAD_LEN: usize = ID_LEN + SECRET_LEN + TOKEN_TAG_LEN;
+
+/// Why a new access token was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AccessTokenRejection {
+    #[error("access token name is empty")]
+    EmptyName,
+
+    #[error("access token name is longer than {MAX_ACCESS_TOKEN_NAME_LEN} characters")]
+    NameTooLong,
+
+    #[error("access token name is already taken")]
+    NameTaken,
+
+    #[error("access token expiration is not in the future")]
+    AlreadyExpired,
+
+    #[error("access token permissions use a Bitbucket token that does not exist")]
+    UnknownBitbucketToken,
+}
+
+/// A newly issued access token.
+pub(crate) struct IssuedAccessToken {
+    pub(crate) id: Uuid,
+    /// The full token, shown once and never stored.
+    pub(crate) token: Secret<String>,
+}
+
+/// Issues, verifies and removes access tokens.
+pub(crate) struct AccessTokenService<D> {
+    db: Arc<D>,
+    mac: TokenMac,
+}
+
+impl<D> AccessTokenService<D> {
+    pub(crate) fn new(db: Arc<D>, mac: TokenMac) -> Self {
+        Self { db, mac }
+    }
+
+    fn encode(&self, id: Uuid, secret: &[u8; SECRET_LEN]) -> Secret<String> {
+        let mut payload = Secret::new(Vec::with_capacity(PAYLOAD_LEN));
+        payload.as_mut().extend_from_slice(id.as_bytes());
+        payload.as_mut().extend_from_slice(secret);
+        let tag = self.mac.tag(payload.as_ref());
+        payload.as_mut().extend_from_slice(&tag);
+
+        Secret::new(format!(
+            "{ACCESS_TOKEN_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(payload.as_ref())
+        ))
+    }
+
+    /// Returns the ID and secret of a token minted by this proxy, checking its tag in constant time.
+    fn decode(&self, presented: &str) -> Option<(Uuid, Secret<[u8; SECRET_LEN]>)> {
+        let encoded = presented.strip_prefix(ACCESS_TOKEN_PREFIX)?;
+        let payload = Secret::new(URL_SAFE_NO_PAD.decode(encoded).ok()?);
+
+        if payload.as_ref().len() != PAYLOAD_LEN {
+            return None;
+        }
+
+        let (message, tag) = payload.as_ref().split_at(ID_LEN + SECRET_LEN);
+        if !self.mac.verify(message, tag) {
+            return None;
+        }
+
+        let (id, secret) = message.split_at(ID_LEN);
+        let id = Uuid::from_slice(id).expect("the ID part is 16 bytes long");
+        let secret = Secret::new(secret.try_into().expect("the secret part is 32 bytes long"));
+
+        Some((id, secret))
+    }
+}
+
+impl<D: AccessTokenDb> AccessTokenService<D> {
+    /// Issues a token with the given policy and returns it, the only time the full token is available.
+    ///
+    /// Fails with [`Error::InvalidAccessToken`] if the input is rejected.
+    pub(crate) async fn issue(
+        &self,
+        name: &str,
+        policy: Policy,
+        expires_at: OffsetDateTime,
+    ) -> Result<IssuedAccessToken> {
+        let name = name.trim();
+        let now = OffsetDateTime::now_utc();
+
+        let rejection = if name.is_empty() {
+            Some(AccessTokenRejection::EmptyName)
+        } else if !(name.chars().count() <= MAX_ACCESS_TOKEN_NAME_LEN) {
+            Some(AccessTokenRejection::NameTooLong)
+        } else if !(now < expires_at) {
+            Some(AccessTokenRejection::AlreadyExpired)
+        } else {
+            None
+        };
+
+        if let Some(rejection) = rejection {
+            return Err(Error::InvalidAccessToken(rejection));
+        }
+
+        let id = Uuid::new_v4();
+        let mut secret = Secret::new([0; SECRET_LEN]);
+        getrandom::fill(secret.as_mut()).map_err(Error::Random)?;
+
+        let token = AccessToken {
+            id,
+            name: name.to_owned(),
+            secret_hash: Sha256::digest(secret.as_ref()).into(),
+            policy,
+            created_at: now,
+            expires_at,
+        };
+
+        self.db.add_access_token(&token).await.map_err(|error| match error {
+            DbError::AccessTokenNameTaken => Error::InvalidAccessToken(AccessTokenRejection::NameTaken),
+            DbError::UnknownBitbucketToken => Error::InvalidAccessToken(AccessTokenRejection::UnknownBitbucketToken),
+            error => Error::Db(error),
+        })?;
+
+        Ok(IssuedAccessToken {
+            id,
+            token: self.encode(id, secret.as_ref()),
+        })
+    }
+
+    /// Returns the access token a client presented, if it is genuine, known and not expired.
+    pub(crate) async fn authenticate(&self, presented: &str) -> Result<Option<AccessToken>> {
+        let Some((id, secret)) = self.decode(presented) else {
+            debug!("Rejected malformed or forged access token");
+            return Ok(None);
+        };
+
+        let Some(token) = self.db.access_token(id).await? else {
+            debug!(access_token_id = %id, "Rejected unknown access token");
+            return Ok(None);
+        };
+
+        let secret_hash: [u8; 32] = Sha256::digest(secret.as_ref()).into();
+        if !bool::from(secret_hash.ct_eq(&token.secret_hash)) {
+            debug!(access_token_id = %id, "Rejected access token with a wrong secret");
+            return Ok(None);
+        }
+
+        if !(OffsetDateTime::now_utc() < token.expires_at) {
+            debug!(access_token_id = %id, "Rejected expired access token");
+            return Ok(None);
+        }
+
+        Ok(Some(token))
+    }
+
+    /// Returns all tokens ordered by name.
+    pub(crate) async fn list(&self) -> Result<Vec<AccessTokenSummary>> {
+        Ok(self.db.access_tokens().await?)
+    }
+
+    /// Removes the token and returns whether it existed.
+    pub(crate) async fn remove(&self, id: Uuid) -> Result<bool> {
+        Ok(self.db.remove_access_token(id).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use time::Duration;
+
+    use super::*;
+    use crate::crypto::{Cipher, KEY_LEN};
+    use crate::db::{BitbucketToken, BitbucketTokenDb, Db};
+
+    struct Fixture {
+        service: AccessTokenService<Db>,
+        db: Arc<Db>,
+        bitbucket_token: Uuid,
+    }
+
+    async fn fixture() -> Fixture {
+        let master_key = Secret::new([5; KEY_LEN]);
+        let db = Arc::new(Db::in_memory(Cipher::for_database(&master_key)).await);
+
+        let bitbucket_token = Uuid::new_v4();
+        db.add_bitbucket_token(&BitbucketToken {
+            id: bitbucket_token,
+            name: "pr-token".to_owned(),
+            token: Secret::new("ATBB-value".to_owned()),
+            created_at: OffsetDateTime::now_utc(),
+        })
+        .await
+        .unwrap();
+
+        Fixture {
+            service: AccessTokenService::new(Arc::clone(&db), TokenMac::for_access_tokens(&master_key)),
+            db,
+            bitbucket_token,
+        }
+    }
+
+    fn policy(bitbucket_token: Uuid) -> Policy {
+        serde_json::from_value(json!({ "version": 1, "rules": [
+            { "bitbucket_token": bitbucket_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }
+        ] }))
+        .unwrap()
+    }
+
+    fn in_days(days: i64) -> OffsetDateTime {
+        OffsetDateTime::now_utc() + Duration::days(days)
+    }
+
+    fn rejection(result: Result<IssuedAccessToken>) -> AccessTokenRejection {
+        match result {
+            Err(Error::InvalidAccessToken(rejection)) => rejection,
+            Err(other) => panic!("expected a rejection, got {other:?}"),
+            Ok(_) => panic!("expected a rejection, got a token"),
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_then_authenticate() {
+        let Fixture {
+            service,
+            bitbucket_token,
+            ..
+        } = fixture().await;
+
+        let issued = service
+            .issue("  ci  ", policy(bitbucket_token), in_days(30))
+            .await
+            .unwrap();
+        let token = issued.token.as_ref();
+        assert!(token.starts_with("fgatb_"));
+        assert_eq!(token.len(), "fgatb_".len() + 107);
+
+        let authenticated = service.authenticate(token).await.unwrap().unwrap();
+        assert_eq!(authenticated.id, issued.id);
+        assert_eq!(authenticated.name, "ci");
+        assert_eq!(
+            authenticated.policy.bitbucket_tokens().into_iter().collect::<Vec<_>>(),
+            [bitbucket_token]
+        );
+
+        let listed = service.list().await.unwrap();
+        assert_eq!((listed.len(), listed[0].id), (1, issued.id));
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_and_forged_tokens() {
+        let Fixture {
+            service,
+            bitbucket_token,
+            ..
+        } = fixture().await;
+        let token = service
+            .issue("ci", policy(bitbucket_token), in_days(1))
+            .await
+            .unwrap()
+            .token;
+        let token = token.as_ref();
+
+        let mut tampered = token.as_bytes().to_vec();
+        let last = tampered.len() - 2;
+        tampered[last] = if tampered[last] == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(tampered).unwrap();
+
+        for presented in [
+            "",
+            "fgatb_",
+            &token["fgatb_".len()..],
+            &format!("ghp_{}", &token["fgatb_".len()..]),
+            &token[..token.len() - 1],
+            &format!("{token}A"),
+            "fgatb_!!!!",
+            &tampered,
+        ] {
+            assert!(service.authenticate(presented).await.unwrap().is_none(), "{presented}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_removed_tokens() {
+        let Fixture {
+            service,
+            bitbucket_token,
+            ..
+        } = fixture().await;
+        let issued = service.issue("ci", policy(bitbucket_token), in_days(1)).await.unwrap();
+
+        assert!(service.remove(issued.id).await.unwrap());
+
+        assert!(service.authenticate(issued.token.as_ref()).await.unwrap().is_none());
+        assert!(!service.remove(issued.id).await.unwrap());
+    }
+
+    /// Someone holding the MAC key and a token ID still cannot mint a working token without its secret.
+    #[tokio::test]
+    async fn rejects_minted_token_with_wrong_secret() {
+        let Fixture {
+            service,
+            bitbucket_token,
+            ..
+        } = fixture().await;
+        let issued = service.issue("ci", policy(bitbucket_token), in_days(1)).await.unwrap();
+
+        let forged = service.encode(issued.id, &[0x42; SECRET_LEN]);
+
+        assert!(service.authenticate(forged.as_ref()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_expired_tokens() {
+        let Fixture {
+            service,
+            db,
+            bitbucket_token,
+        } = fixture().await;
+        let (id, secret) = (Uuid::new_v4(), [7; SECRET_LEN]);
+        db.add_access_token(&AccessToken {
+            id,
+            name: "old".to_owned(),
+            secret_hash: Sha256::digest(secret).into(),
+            policy: policy(bitbucket_token),
+            created_at: in_days(-10),
+            expires_at: in_days(-1),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            service
+                .authenticate(service.encode(id, &secret).as_ref())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_input() {
+        let Fixture {
+            service,
+            bitbucket_token,
+            ..
+        } = fixture().await;
+        let long_name = "n".repeat(MAX_ACCESS_TOKEN_NAME_LEN + 1);
+
+        assert_eq!(
+            rejection(service.issue(" ", policy(bitbucket_token), in_days(1)).await),
+            AccessTokenRejection::EmptyName
+        );
+        assert_eq!(
+            rejection(service.issue(&long_name, policy(bitbucket_token), in_days(1)).await),
+            AccessTokenRejection::NameTooLong
+        );
+        assert_eq!(
+            rejection(service.issue("ci", policy(bitbucket_token), in_days(-1)).await),
+            AccessTokenRejection::AlreadyExpired
+        );
+        assert_eq!(
+            rejection(service.issue("ci", policy(Uuid::new_v4()), in_days(1)).await),
+            AccessTokenRejection::UnknownBitbucketToken
+        );
+        assert!(service.list().await.unwrap().is_empty());
+
+        service.issue("ci", policy(bitbucket_token), in_days(1)).await.unwrap();
+        assert_eq!(
+            rejection(service.issue("ci", policy(bitbucket_token), in_days(1)).await),
+            AccessTokenRejection::NameTaken
+        );
+    }
+}

@@ -1,0 +1,63 @@
+<fieldset class="rule-card">
+  <legend>Rule</legend>
+  <div class="rule-grid">
+    <label>
+      Bitbucket token
+      <select name="rule.{{ rule.key }}.bitbucket_token" required>
+        <option value=""{% if rule.bitbucket_token.is_empty() %} selected{% endif %} disabled>Choose a token</option>
+        {% for token in bitbucket_tokens %}
+        <option value="{{ token.id }}"{% if rule.uses_bitbucket_token(token.id) %} selected{% endif %}>{{ token.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Project
+      <input name="rule.{{ rule.key }}.project" value="{{ rule.project }}" placeholder="PROJ or *" autocomplete="off" required>
+    </label>
+    <label>
+      Repository
+      <input name="rule.{{ rule.key }}.repository" value="{{ rule.repository }}" placeholder="api or *" autocomplete="off" required>
+    </label>
+  </div>
+
+  <div class="action-groups">
+    {% for group in action_groups %}
+    <div class="action-group">
+      <span class="action-group-label">{{ group.label }}</span>
+      {% for action in group.actions %}
+      <label><input type="checkbox" name="rule.{{ rule.key }}.actions" value="{{ action.name }}"{% if rule.has_action(action.name) %} checked{% endif %}> {{ action.label }}</label>
+      {% endfor %}
+      {% if let Some(note) = group.note %}<span class="action-group-note">{{ note }}</span>{% endif %}
+      {% if group.branch_pattern %}
+      <input
+        class="branch-pattern"
+        name="rule.{{ rule.key }}.branch"
+        value="{{ rule.branch }}"
+        placeholder="only branches matching, e.g. bot/**"
+        aria-label="Branches that create and delete apply to"
+        autocomplete="off"
+      >
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="rule-grid pull-request-branches">
+    <label>
+      Source branches
+      <input name="rule.{{ rule.key }}.source" value="{{ rule.source }}" placeholder="feature/**" autocomplete="off">
+    </label>
+    <label>
+      Target branches
+      <input name="rule.{{ rule.key }}.target" value="{{ rule.target }}" placeholder="main, release/*" autocomplete="off">
+    </label>
+  </div>
+  <small class="rule-hint">
+    Branch patterns are optional and comma-separated; <code>*</code> stays within one <code>/</code> segment, <code>**</code> crosses them.
+    The pattern next to Branches limits branch create and delete.
+    Source and target branches limit pull request and PR comment actions.
+    Reading is never limited by branches.
+  </small>
+
+  <button type="button" class="outline danger remove-rule" hx-on:click="this.closest('.rule-card').remove()">Remove rule</button>
+</fieldset>

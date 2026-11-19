@@ -6,11 +6,14 @@
 //!
 //! Every message is bound to a caller-chosen context, so that a ciphertext cannot be moved to another column, row or cookie.
 //!
+//! Access tokens are authenticated with [`TokenMac`], an HMAC-SHA256 key derived the same way with its own salt.
+//!
 //! [RFC 5869]: https://www.rfc-editor.org/rfc/rfc5869
 
 use aes_gcm::aead::{Aead as _, KeyInit as _, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac as _};
 use secret::Secret;
 use sha2::Sha256;
 
@@ -24,6 +27,11 @@ const HEADER_LEN: usize = 1 /* FormatVersion */ + NONCE_LEN;
 
 const KEY_INFO: &[u8] = b"fqatb-proxy AES-256-GCM key";
 
+const TOKEN_MAC_KEY_INFO: &[u8] = b"fqatb-proxy access token HMAC-SHA256 key";
+
+/// Length of an access token tag in bytes.
+pub(crate) const TOKEN_TAG_LEN: usize = 32;
+
 const DATABASE_SALT: [u8; 32] = [
     0xf9, 0xf2, 0xcc, 0x9a, 0xed, 0x97, 0x68, 0x72, 0xfe, 0x58, 0xff, 0x15, 0xed, 0x7e, 0x97, 0x7b, 0xff, 0xce, 0x14,
     0xd1, 0x61, 0xcd, 0x6a, 0x4a, 0x73, 0x94, 0x01, 0x59, 0xe4, 0x44, 0xa4, 0xd0,
@@ -32,6 +40,11 @@ const DATABASE_SALT: [u8; 32] = [
 const SESSION_SALT: [u8; 32] = [
     0x4c, 0x3c, 0x61, 0xfb, 0x0d, 0x34, 0xe4, 0x88, 0xab, 0xb7, 0x91, 0x53, 0xfe, 0xad, 0x6b, 0xc7, 0x92, 0x47, 0x2c,
     0xc4, 0xd2, 0x8e, 0x84, 0x4a, 0x1c, 0xb7, 0x47, 0x1b, 0x4e, 0xab, 0xf1, 0x61,
+];
+
+const TOKEN_MAC_SALT: [u8; 32] = [
+    0xed, 0xa7, 0xd3, 0x4a, 0x90, 0x4b, 0x23, 0x77, 0x62, 0x82, 0x99, 0x31, 0x32, 0x00, 0x78, 0x39, 0x01, 0x06, 0x93,
+    0xd1, 0x06, 0x10, 0x02, 0x0c, 0x65, 0xaa, 0xc7, 0x25, 0xe4, 0x98, 0x2e, 0xea,
 ];
 
 /// Encrypts and authenticates messages with one derived key.
@@ -54,13 +67,9 @@ impl Cipher {
     }
 
     fn derive(master_key: &Secret<[u8; KEY_LEN]>, salt: &[u8]) -> Self {
-        let mut key = Secret::new([0; 32]);
-
-        Hkdf::<Sha256>::new(Some(salt), master_key.as_ref())
-            .expand(KEY_INFO, key.as_mut())
-            .expect("32 bytes is a valid HKDF-SHA256 output length");
-
-        Self { key }
+        Self {
+            key: derive_key(master_key, salt, KEY_INFO),
+        }
     }
 
     pub(crate) fn encrypt(&self, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, EncryptError> {
@@ -117,6 +126,44 @@ impl Cipher {
         // The expanded key schedule is zeroized when the returned value is dropped.
         Aes256Gcm::new(self.key.as_ref().into())
     }
+}
+
+/// Authenticates access tokens, so that guessed or forged tokens are rejected without a database lookup.
+pub(crate) struct TokenMac {
+    key: Secret<[u8; 32]>,
+}
+
+impl TokenMac {
+    pub(crate) fn for_access_tokens(master_key: &Secret<[u8; KEY_LEN]>) -> Self {
+        Self {
+            key: derive_key(master_key, &TOKEN_MAC_SALT, TOKEN_MAC_KEY_INFO),
+        }
+    }
+
+    pub(crate) fn tag(&self, message: &[u8]) -> [u8; TOKEN_TAG_LEN] {
+        self.mac(message).finalize().into_bytes().into()
+    }
+
+    /// Compares in constant time.
+    pub(crate) fn verify(&self, message: &[u8], tag: &[u8]) -> bool {
+        self.mac(message).verify_slice(tag).is_ok()
+    }
+
+    fn mac(&self, message: &[u8]) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.key.as_ref()).expect("HMAC accepts keys of any length");
+        mac.update(message);
+        mac
+    }
+}
+
+fn derive_key(master_key: &Secret<[u8; KEY_LEN]>, salt: &[u8], info: &[u8]) -> Secret<[u8; 32]> {
+    let mut key = Secret::new([0; 32]);
+
+    Hkdf::<Sha256>::new(Some(salt), master_key.as_ref())
+        .expand(info, key.as_mut())
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+
+    key
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -241,5 +288,16 @@ mod tests {
             cipher.decrypt(b"ctx", &message[..message.len() - 1]),
             Err(DecryptError::Truncated)
         ));
+    }
+
+    #[test]
+    fn token_mac_verifies_its_own_tags_only() {
+        let mac = TokenMac::for_access_tokens(&master_key());
+        let tag = mac.tag(b"token payload");
+
+        assert!(mac.verify(b"token payload", &tag));
+        assert!(!mac.verify(b"token payload!", &tag));
+        assert!(!mac.verify(b"token payload", &tag[..31]));
+        assert!(!TokenMac::for_access_tokens(&Secret::new([8; KEY_LEN])).verify(b"token payload", &tag));
     }
 }

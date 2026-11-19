@@ -2,6 +2,7 @@ use std::env;
 use std::net::SocketAddr;
 
 use anyhow::Context as _;
+use reqwest::Url;
 use secret::Secret;
 
 use crate::crypto::KEY_LEN;
@@ -17,6 +18,8 @@ pub(crate) struct Config {
     pub(crate) database_url: String,
     /// `FQATB_ENCRYPTION_KEY`, given as 64 hex characters.
     pub(crate) encryption_key: Secret<[u8; KEY_LEN]>,
+    /// `FQATB_BITBUCKET_URL`, the base URL of the Bitbucket Data Center server, such as `https://bitbucket.example.com`.
+    pub(crate) bitbucket_url: Url,
 }
 
 impl Config {
@@ -37,10 +40,21 @@ impl Config {
             key
         };
 
+        let bitbucket_url = {
+            let text = env::var("FQATB_BITBUCKET_URL").context("FQATB_BITBUCKET_URL is not set")?;
+            let url = Url::parse(text.trim()).context("invalid FQATB_BITBUCKET_URL")?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https") && url.query().is_none() && url.fragment().is_none(),
+                "FQATB_BITBUCKET_URL must be an http or https URL without a query or fragment"
+            );
+            url
+        };
+
         Ok(Self {
             listen_addr,
             database_url,
             encryption_key,
+            bitbucket_url,
         })
     }
 }

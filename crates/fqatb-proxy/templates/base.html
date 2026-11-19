@@ -140,6 +140,120 @@
         --pico-box-shadow: 0 0 0 var(--pico-outline-width) rgba(217, 53, 38, 0.5);
       }
 
+      /* Access token form: name and expiry on one row, then one card per rule. */
+      .token-meta {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr;
+        gap: 0.75rem;
+      }
+
+      .rule-cards {
+        counter-reset: rule;
+      }
+
+      .rule-card {
+        counter-increment: rule;
+        margin-bottom: var(--pico-spacing);
+        padding: 0.75rem 1rem;
+        border: var(--pico-border-width) solid var(--pico-muted-border-color);
+        border-radius: var(--pico-border-radius);
+      }
+
+      .rule-card legend {
+        padding-inline: 0.25rem;
+        font-weight: 600;
+      }
+
+      .rule-card legend::after {
+        content: " " counter(rule);
+      }
+
+      .rule-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.75rem;
+      }
+
+      .rule-grid label,
+      .rule-grid input,
+      .rule-grid select {
+        margin-bottom: 0.5rem;
+      }
+
+      .action-groups {
+        margin-block: 0.25rem 0.75rem;
+      }
+
+      .action-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem 1rem;
+        margin-bottom: 0.25rem;
+      }
+
+      .action-group-label {
+        width: 7rem;
+        font-weight: 600;
+      }
+
+      .action-group label {
+        margin: 0;
+        font-size: var(--fgatb-control-font-size);
+      }
+
+      .action-group-note {
+        color: var(--pico-muted-color);
+        font-size: var(--fgatb-control-font-size);
+      }
+
+      .action-group .branch-pattern {
+        flex: 1 1 12rem;
+        max-width: 20rem;
+        margin: 0;
+      }
+
+      .rule-grid.pull-request-branches {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .rule-hint {
+        display: block;
+        margin-bottom: 0.5rem;
+        color: var(--pico-muted-color);
+      }
+
+      .rule-card .remove-rule {
+        margin: 0;
+        padding: 0.125rem 0.5rem;
+        font-size: 0.8125rem;
+      }
+
+      .add-rule {
+        margin-bottom: var(--pico-spacing);
+      }
+
+      .issued-token {
+        margin-bottom: calc(var(--pico-spacing) * 1.5);
+        border-left: 4px solid var(--pico-ins-color);
+      }
+
+      .issued-token input {
+        font-family: var(--pico-font-family-monospace);
+      }
+
+      mark.expired {
+        padding: 0 0.25rem;
+        font-size: 0.75rem;
+      }
+
+      @media (max-width: 575px) {
+        .token-meta,
+        .rule-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
       .visually-hidden {
         position: absolute;
         width: 1px;

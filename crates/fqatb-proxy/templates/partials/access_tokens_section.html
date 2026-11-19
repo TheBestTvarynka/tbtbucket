@@ -1,0 +1,59 @@
+<section id="access-tokens">
+  {% if let Some(issued) = issued %}
+  <article class="issued-token">
+    <p><strong>Access token &#34;{{ issued.name }}&#34; created.</strong> Copy it now: it is shown only once and cannot be recovered.</p>
+    <fieldset role="group">
+      <input id="issued-token-value" type="text" readonly aria-label="Access token" value="{{ issued.token }}">
+      <button
+        type="button"
+        hx-on:click="navigator.clipboard.writeText(document.getElementById('issued-token-value').value); this.textContent = 'Copied'"
+      >Copy</button>
+    </fieldset>
+  </article>
+  {% endif %}
+
+  {% if bitbucket_tokens.is_empty() %}
+  <p>Add a Bitbucket token on <a href="/webapp/bitbucket_tokens">/bitbucket_tokens</a> before issuing access tokens: every rule forwards requests with one.</p>
+  {% else %}
+  <form hx-post="/fgatbapi/access_tokens" hx-target="#access-tokens" hx-swap="outerHTML">
+    <div class="token-meta">
+      <label>
+        Name
+        <input name="name" value="{{ form.name }}" maxlength="100" autocomplete="off" required>
+      </label>
+      <label>
+        Expires
+        <select name="expiry">
+          {% for option in form.expiry_options() %}
+          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Custom date (UTC, inclusive)
+        <input type="date" name="expires_on" value="{{ form.expires_on }}">
+      </label>
+    </div>
+
+    <div id="rule-cards" class="rule-cards">
+      {% for rule in form.rules %}
+      {% include "partials/access_token_rule.html" %}
+      {% endfor %}
+    </div>
+
+    <button
+      type="button"
+      class="secondary outline add-rule"
+      hx-post="/fgatbapi/access_tokens/rules"
+      hx-params="none"
+      hx-target="#rule-cards"
+      hx-swap="beforeend"
+    >Add rule</button>
+
+    {% if let Some(error) = error %}<small class="form-error">{{ error }}</small>{% endif %}
+    <button type="submit">Create access token</button>
+  </form>
+  {% endif %}
+
+  {% include "partials/access_tokens_list.html" %}
+</section>

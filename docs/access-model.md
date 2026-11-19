@@ -117,7 +117,7 @@ There are no deny rules.
   "rules": [
     {
       "bitbucket_token": "6f1c2a9e-3d7b-4c55-9a51-1f0e8d2b7c44",
-      "actions": ["pr:read", "pr:create", "pr:update"],
+      "actions": ["pr:create", "pr:update"],
       "project": "PROJ",
       "repository": "api",
       "branches": {
@@ -134,7 +134,7 @@ There are no deny rules.
 | `version` | yes | Format version, so that older documents keep parsing after the format evolves. |
 | `rules[].bitbucket_token` | yes | ID of the Bitbucket token that executes requests allowed by this rule. |
 | `rules[].actions` | yes | Actions or action wildcards, such as `pr:*`. |
-| `rules[].project` | yes | Project key or glob. Compared case-insensitively. |
+| `rules[].project` | yes | Project key or glob. Compared case-insensitively. Personal projects (`~user`) are not accepted yet. |
 | `rules[].repository` | yes | Repository slug or glob. |
 | `rules[].branches.branch` | no | Globs for the branch an action works on, such as the branch being created or pushed. |
 | `rules[].branches.source` | no | Globs for a pull request's source branch. |
@@ -146,11 +146,19 @@ A rule matches a request when all of these hold:
 
 - the action is listed in `actions`, directly or through a wildcard;
 - `project` and `repository` match;
-- every branch condition the rule declares is satisfied by the request.
+- every branch condition the rule declares that applies to the action is satisfied by the request.
 
-A branch condition is satisfied if the request carries that branch and the branch matches at least one of the globs.
-If the request does not carry the branch at all, the condition fails, so a rule with a `source` condition never allows `repo:read`.
-Saving a policy rejects rules whose branch conditions cannot apply to any of their actions.
+Branch conditions only limit the actions they apply to:
+
+- `branch` applies to `branch:create`, `branch:delete` and `branch:push`;
+- `source` and `target` apply to every `pr:*` and `pr_comment:*` action;
+- nothing applies to `repo:read` or the `tag:*` actions, which are never limited by branches.
+
+So one rule can allow reading everything in a repository and, at the same time, writing only to matching branches.
+
+A condition that applies is satisfied if the request carries that branch and the branch matches at least one of the globs.
+If the request does not carry the branch, the condition fails.
+Saving a policy rejects a rule with a branch condition that applies to none of its actions, since that condition would have no effect.
 
 A request is allowed when at least one rule matches.
 
@@ -171,11 +179,11 @@ In globs, `*` matches within one `/`-separated segment and `**` matches across s
 
 ### Examples
 
-Create and edit, but not merge, pull requests in `PROJ/api` from `feature/` branches:
+Read everything in `PROJ/api`, and create and edit, but not merge, pull requests from `feature/` branches:
 
 ```json
 { "version": 1, "rules": [
-  { "bitbucket_token": "<pr-token>", "actions": ["pr:read", "pr:create", "pr:update"],
+  { "bitbucket_token": "<pr-token>", "actions": ["repo:read", "pr:create", "pr:update"],
     "project": "PROJ", "repository": "api", "branches": { "source": ["feature/**"] } }
 ] }
 ```
@@ -195,19 +203,15 @@ Work with pull requests in every repository of a project:
 Read and create pull request comments, without editing or deleting them:
 
 ```json
-{ "bitbucket_token": "<pr-token>", "actions": ["pr:read", "pr_comment:read", "pr_comment:create"], "project": "PROJ", "repository": "*" }
+{ "bitbucket_token": "<pr-token>", "actions": ["repo:read", "pr_comment:create"], "project": "PROJ", "repository": "*" }
 ```
 
 Read everything in a repository, but write only `bot/` branches and pull requests from them:
 
 ```json
 { "version": 1, "rules": [
-  { "bitbucket_token": "<read-token>", "actions": ["repo:read", "branch:read", "pr:read"],
-    "project": "PROJ", "repository": "api" },
-  { "bitbucket_token": "<write-token>", "actions": ["branch:create", "branch:push"],
-    "project": "PROJ", "repository": "api", "branches": { "branch": ["bot/**"] } },
-  { "bitbucket_token": "<write-token>", "actions": ["pr:create", "pr:update"],
-    "project": "PROJ", "repository": "api", "branches": { "source": ["bot/**"] } }
+  { "bitbucket_token": "<write-token>", "actions": ["repo:read", "branch:create", "branch:push", "pr:create", "pr:update"],
+    "project": "PROJ", "repository": "api", "branches": { "branch": ["bot/**"], "source": ["bot/**"] } }
 ] }
 ```
 
@@ -215,9 +219,9 @@ Read one repository with one Bitbucket token and manage pull requests in another
 
 ```json
 { "version": 1, "rules": [
-  { "bitbucket_token": "<read-token>", "actions": ["repo:read", "branch:read", "pr:read"],
+  { "bitbucket_token": "<read-token>", "actions": ["repo:read"],
     "project": "PROJ", "repository": "docs" },
-  { "bitbucket_token": "<pr-token>", "actions": ["pr:read", "pr:create", "pr:update"],
+  { "bitbucket_token": "<pr-token>", "actions": ["repo:read", "pr:create", "pr:update"],
     "project": "PROJ", "repository": "api" }
 ] }
 ```
@@ -229,11 +233,9 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 
 | Action | Endpoints | Branch attributes |
 | --- | --- | --- |
-| `repo:read` | `GET {repo}`, and `GET` only on its `browse`, `raw`, `files`, `commits`, `compare`, `diff` and `tags` subtrees; other methods on these paths, such as creating tags or posting build statuses, are not `repo:read` | – |
-| `branch:read` | `GET {repo}/branches`, `GET branch-utils/{version}/…/branches/info/{commitId}` | – |
+| `repo:read` | Every read in the repository: `GET {repo}`; `GET` on its `browse`, `raw`, `files`, `commits`, `compare`, `diff` and `tags` subtrees; `GET {repo}/branches` and `GET branch-utils/{version}/…/branches/info/{commitId}`; `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}` and its `activities`, `changes`, `commits`, `diff`, `diff-stats-summary`, `merge` (merge check); `GET` on its `comments` and `blocker-comments`. Other methods on these paths, such as creating tags or posting build statuses, are not `repo:read`. | – |
 | `branch:create` | `POST {repo}/branches`, `POST branch-utils/{version}/…/branches` | `branch` from `name` in the body |
 | `branch:delete` | `DELETE branch-utils/{version}/…/branches` | `branch` from `name` in the body |
-| `pr:read` | `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}` and its `activities`, `changes`, `commits`, `diff`, `merge` (merge check) | – |
 | `pr:create` | `POST {repo}/pull-requests` | `source` and `target` from `fromRef` and `toRef` in the body |
 | `pr:update` | `PUT {repo}/pull-requests/{id}` | `source` and `target` of the existing pull request, and `target` from `toRef` in the body if it changes |
 | `pr:review` | `PUT`, `DELETE {repo}/pull-requests/{id}/participants/{userSlug}`, `POST`, `DELETE {repo}/pull-requests/{id}/approve` | `source` and `target` of the existing pull request |
@@ -241,7 +243,6 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 | `pr:decline` | `POST {repo}/pull-requests/{id}/decline` | `source` and `target` of the existing pull request |
 | `pr:reopen` | `POST {repo}/pull-requests/{id}/reopen` | `source` and `target` of the existing pull request |
 | `pr:delete` | `DELETE {repo}/pull-requests/{id}` | `source` and `target` of the existing pull request |
-| `pr_comment:read` | `GET {repo}/pull-requests/{id}/comments[/{commentId}]`, `GET …/blocker-comments[/{commentId}]` | `source` and `target` of the existing pull request |
 | `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments` | `source` and `target` of the existing pull request |
 | `pr_comment:update` | `PUT {repo}/pull-requests/{id}/comments/{commentId}`, `PUT …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `pr_comment:delete` | `DELETE {repo}/pull-requests/{id}/comments/{commentId}`, `DELETE …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
@@ -276,8 +277,8 @@ A missing, malformed, unknown or expired token yields `401 Unauthorized`.
 The path is normalized before classification, because two spellings of one endpoint must never classify differently:
 
 - `/rest/api/1.0/…` and `/rest/api/latest/…` are equivalent, as are the other REST plugins' version segments;
-- percent-encoding is decoded exactly once, and paths containing encoded slashes (`%2F`) or `..` segments are rejected;
-- repeated slashes are collapsed and a trailing slash is ignored;
+- percent-encoding is decoded exactly once, and paths containing encoded slashes or backslashes, `.` or `..` segments, or empty segments (repeated slashes) are rejected rather than rewritten, because the original path is what Bitbucket receives;
+- a single trailing slash is ignored;
 - project keys are compared case-insensitively.
 
 ### Classification and attributes
@@ -285,19 +286,22 @@ The path is normalized before classification, because two spellings of one endpo
 The normalized request is classified into an action, a project, a repository and the branch attributes it needs, according to [Actions](#actions).
 Branch attributes come from:
 
-- the request body, read into memory up to a size limit, for requests that create something;
-- the existing pull request, fetched from Bitbucket and briefly cached, for requests on an existing pull request.
+- the request body, read into memory up to 1 MiB, for requests that create a branch or pull request, delete a branch, or update a pull request;
+- the existing pull request, fetched from Bitbucket on every request, for requests on an existing pull request.
 
-A pull request's target branch changes only through `pr:update`, which is itself checked, so a cached pull request cannot be used to bypass a rule.
+Updating a pull request may move it to another target branch, given in `toRef` of the body.
+Such an update must be allowed for both the current and the new target.
+The other bodies stream through without being read.
 
 ### Forwarding
 
-An allowed request is forwarded with these changes:
+An allowed request is forwarded to the server at `FQATB_BITBUCKET_URL`, with its path and query unchanged, and with these changes:
 
 - `Authorization` is replaced with `Bearer <Bitbucket token>` of the chosen rule;
 - the `Cookie` header is removed entirely, which drops the admin session cookie if a browser sent one;
 - `Set-Cookie` headers are removed from the response, so that Bitbucket's own session cookies cannot authenticate later requests under a different Bitbucket token.
 
+Connection-specific headers are dropped in both directions, and redirects are passed to the client rather than followed.
 The response body is streamed back unchanged.
 
 ### Errors
@@ -308,7 +312,10 @@ Denied requests use Bitbucket's error format, so clients report them like any ot
 { "errors": [{ "context": null, "message": "access token does not allow pr:merge on PROJ/api", "exceptionName": null }] }
 ```
 
-Each decision is logged with the access token ID, the action, the resource, the branch attributes and the rule that matched, if any.
+A missing or invalid token yields `401 Unauthorized` with `WWW-Authenticate: Basic realm="Bitbucket"`, so that Git clients ask for credentials.
+
+Denied requests are logged as warnings with the access token ID, the action, the resource and the reason.
+Allowed requests are logged at debug level with the rule that matched and the Bitbucket token used.
 
 ## Git over HTTPS
 
@@ -337,8 +344,10 @@ The actions and branch conditions above already describe these checks, so suppor
 
 - Personal repositories (`/projects/~{userSlug}/…`, `/scm/~{userSlug}/…`).
   They are meant to be allowed only by rules that name the `~{userSlug}` project explicitly, never through a `*` project glob.
-  Until then they are denied.
+  Until then they are denied, and project patterns starting with `~` are rejected when a policy is saved.
 - Git over HTTPS.
 - Pull requests from forks.
+- Caching pull request lookups.
+  Every request on an existing pull request fetches it from Bitbucket first.
 - Response rewriting.
   Bitbucket responses contain absolute links to the Bitbucket server; clients that follow them bypass the proxy and fail to authenticate there.

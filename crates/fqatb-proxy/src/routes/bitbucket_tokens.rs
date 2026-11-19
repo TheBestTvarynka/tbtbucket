@@ -12,11 +12,11 @@ use axum::routing::{delete, get, post};
 use axum::{Form, Router};
 use secret::Secret;
 use serde::Deserialize;
-use time::UtcOffset;
 use tracing::info;
 use uuid::Uuid;
 
 use super::auth::AuthSession;
+use super::utc_minutes;
 use crate::db::BitbucketTokenSummary;
 use crate::services::{BitbucketTokenRejection, MAX_TOKEN_LEN, MAX_TOKEN_NAME_LEN};
 use crate::state::AppState;
@@ -67,23 +67,29 @@ struct TokenRow {
     name: String,
     /// Creation time in UTC, e.g. `2026-11-18 20:00`.
     created_at: String,
+    /// The removal confirmation, naming the access tokens removed along with it.
+    confirm: String,
 }
 
-impl From<BitbucketTokenSummary> for TokenRow {
-    fn from(token: BitbucketTokenSummary) -> Self {
-        let at = token.created_at.to_offset(UtcOffset::UTC);
+impl TokenRow {
+    fn new(token: BitbucketTokenSummary, dependents: &[String]) -> Self {
+        let mut confirm = format!("Remove the token \"{}\"? This cannot be undone.", token.name);
+        if !dependents.is_empty() {
+            let names = dependents
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            confirm.push_str(&format!(
+                "\n\nThese access tokens use it and will be removed too: {names}."
+            ));
+        }
 
         Self {
             id: token.id,
             name: token.name,
-            created_at: format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}",
-                at.year(),
-                u8::from(at.month()),
-                at.day(),
-                at.hour(),
-                at.minute()
-            ),
+            created_at: utc_minutes(token.created_at),
+            confirm,
         }
     }
 }
@@ -140,8 +146,10 @@ async fn add(_auth: AuthSession, State(state): State<AppState>, Form(form): Form
 ///
 /// Removing a token that no longer exists is not an error, so a repeated request still shows the current list.
 async fn remove(_auth: AuthSession, State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<TokensList> {
+    let dependents = state.bitbucket_token_service.dependent_access_tokens(id).await?;
+
     if state.bitbucket_token_service.remove(id).await? {
-        info!(token_id = %id, "Bitbucket token removed");
+        info!(token_id = %id, removed_access_tokens = ?dependents, "Bitbucket token removed");
     }
 
     Ok(TokensList {
@@ -151,7 +159,14 @@ async fn remove(_auth: AuthSession, State(state): State<AppState>, Path(id): Pat
 
 async fn token_rows(state: &AppState) -> Result<Vec<TokenRow>> {
     let tokens = state.bitbucket_token_service.list().await?;
-    Ok(tokens.into_iter().map(TokenRow::from).collect())
+
+    let mut rows = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let dependents = state.bitbucket_token_service.dependent_access_tokens(token.id).await?;
+        rows.push(TokenRow::new(token, &dependents));
+    }
+
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -245,7 +260,9 @@ mod tests {
 
         let page = body_text(send(&app, with_cookie(Request::get("/webapp/bitbucket_tokens"), &cookie)).await).await;
         assert!(page.contains("<td>deploy &#60;ci&#62;</td>"));
-        assert!(page.contains(r#"hx-confirm="Remove the token &quot;deploy &#60;ci&#62;&quot;?"#));
+        assert!(
+            page.contains(r#"hx-confirm="Remove the token &#34;deploy &#60;ci&#62;&#34;? This cannot be undone.""#)
+        );
 
         let response = send(&app, remove_request(&cookie, &first_token_id(&page))).await;
         assert_eq!(response.status(), StatusCode::OK);

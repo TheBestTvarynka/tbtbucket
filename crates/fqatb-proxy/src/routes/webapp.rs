@@ -209,11 +209,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pages_outside_prefix_are_not_served() {
+    async fn paths_outside_prefix_belong_to_the_bitbucket_api() {
         let (app, _state) = setup().await;
 
+        // Without an access token, the Bitbucket-compatible API answers instead of an admin page.
         for uri in ["/", "/login", "/logout"] {
-            assert_eq!(send(&app, get(uri)).await.status(), StatusCode::NOT_FOUND);
+            let response = send(&app, get(uri)).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(body_text(response).await.contains(r#""errors""#), "{uri}");
         }
     }
 

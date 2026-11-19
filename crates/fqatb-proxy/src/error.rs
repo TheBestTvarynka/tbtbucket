@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::crypto::EncryptError;
 use crate::db::DbError;
-use crate::services::{BitbucketTokenRejection, PasswordRequirement};
+use crate::services::{AccessTokenRejection, BitbucketTokenRejection, PasswordRequirement};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -31,6 +31,15 @@ pub(crate) enum Error {
 
     #[error("invalid Bitbucket token")]
     InvalidBitbucketToken(#[source] BitbucketTokenRejection),
+
+    #[error("invalid access token")]
+    InvalidAccessToken(#[source] AccessTokenRejection),
+
+    #[error("failed to build the HTTP client")]
+    HttpClient(#[source] reqwest::Error),
+
+    #[error("failed to generate random bytes")]
+    Random(#[source] getrandom::Error),
 
     #[error("failed to encrypt session token")]
     SessionToken(#[source] EncryptError),

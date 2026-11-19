@@ -1,3 +1,4 @@
+use secret::Secret;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use time::format_description::well_known::Rfc3339;
@@ -6,7 +7,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::model::*;
-use super::{AdminDb, BitbucketTokenDb, DbError, SessionDb};
+use super::{AccessTokenDb, AdminDb, BitbucketTokenDb, DbError, SessionDb};
 use crate::crypto::Cipher;
 use crate::error::report;
 
@@ -157,7 +158,6 @@ impl SessionDb for Db {
     }
 }
 
-/// Binds a session ciphertext to its row, so that it does not decrypt under another ID.
 impl BitbucketTokenDb for Db {
     async fn add_bitbucket_token(&self, token: &BitbucketToken) -> Result<(), DbError> {
         let ciphertext = self
@@ -189,6 +189,31 @@ impl BitbucketTokenDb for Db {
         Ok(())
     }
 
+    async fn bitbucket_token(&self, id: Uuid) -> Result<Option<BitbucketToken>, DbError> {
+        let row: Option<(String, Vec<u8>, String)> =
+            sqlx::query_as("SELECT name, token, created_at FROM bitbucket_tokens WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let Some((name, ciphertext, created_at)) = row else {
+            return Ok(None);
+        };
+
+        let token = self
+            .cipher
+            .decrypt(bitbucket_token_context(id).as_bytes(), &ciphertext)
+            .map_err(|error| DbError::Decrypt("Bitbucket token", error))?;
+        let token = String::from_utf8(token).map_err(|_| DbError::InvalidText("Bitbucket token"))?;
+
+        Ok(Some(BitbucketToken {
+            id,
+            name,
+            token: Secret::new(token),
+            created_at: parse_utc_timestamp(&created_at, "Bitbucket token creation")?,
+        }))
+    }
+
     async fn bitbucket_tokens(&self) -> Result<Vec<BitbucketTokenSummary>, DbError> {
         let rows: Vec<(String, String, String)> =
             sqlx::query_as("SELECT id, name, created_at FROM bitbucket_tokens ORDER BY name")
@@ -198,20 +223,181 @@ impl BitbucketTokenDb for Db {
         rows.into_iter()
             .map(|(id, name, created_at)| {
                 let id = Uuid::parse_str(&id).map_err(|error| DbError::InvalidId("Bitbucket token", error))?;
-                let created_at = OffsetDateTime::parse(&created_at, &Rfc3339)
-                    .map_err(|error| DbError::InvalidTimestamp("Bitbucket token creation", error))?;
+                let created_at = parse_utc_timestamp(&created_at, "Bitbucket token creation")?;
                 Ok(BitbucketTokenSummary { id, name, created_at })
             })
             .collect()
     }
 
     async fn remove_bitbucket_token(&self, id: Uuid) -> Result<bool, DbError> {
+        let mut transaction = self.pool.begin().await?;
+
+        // An access token whose policy uses this Bitbucket token can no longer work as written.
+        sqlx::query(
+            "DELETE FROM access_tokens WHERE id IN \
+             (SELECT access_token_id FROM access_token_bitbucket_tokens WHERE bitbucket_token_id = ?)",
+        )
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+
         let result = sqlx::query("DELETE FROM bitbucket_tokens WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(0 < result.rows_affected())
+    }
+}
+
+/// An `access_tokens` row as stored, before decryption and parsing.
+#[derive(sqlx::FromRow)]
+struct AccessTokenRow {
+    name: String,
+    secret_hash: Vec<u8>,
+    permissions: Vec<u8>,
+    created_at: String,
+    expires_at: String,
+}
+
+impl AccessTokenDb for Db {
+    async fn add_access_token(&self, token: &AccessToken) -> Result<(), DbError> {
+        let permissions = {
+            let json = serde_json::to_vec(&token.policy)
+                .map_err(|error| DbError::Serialize("access token permissions", error))?;
+            self.cipher
+                .encrypt(access_token_context(token.id).as_bytes(), &json)
+                .map_err(|error| DbError::Encrypt("access token permissions", error))?
+        };
+        let created_at = format_utc_timestamp(token.created_at)
+            .map_err(|error| DbError::FormatTimestamp("access token creation", error))?;
+        let expires_at = format_utc_timestamp(token.expires_at)
+            .map_err(|error| DbError::FormatTimestamp("access token expiration", error))?;
+
+        let mut transaction = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO access_tokens (id, name, secret_hash, permissions, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(token.id.to_string())
+        .bind(&token.name)
+        .bind(token.secret_hash.as_slice())
+        .bind(permissions)
+        .bind(created_at)
+        .bind(expires_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| {
+            if is_unique_violation(&error) {
+                DbError::AccessTokenNameTaken
+            } else {
+                DbError::Sqlx(error)
+            }
+        })?;
+
+        for bitbucket_token_id in token.policy.bitbucket_tokens() {
+            sqlx::query(
+                "INSERT INTO access_token_bitbucket_tokens (access_token_id, bitbucket_token_id) VALUES (?, ?)",
+            )
+            .bind(token.id.to_string())
+            .bind(bitbucket_token_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                if is_foreign_key_violation(&error) {
+                    DbError::UnknownBitbucketToken
+                } else {
+                    DbError::Sqlx(error)
+                }
+            })?;
+        }
+
+        transaction.commit().await?;
+
+        Ok(())
+    }
+
+    async fn access_token(&self, id: Uuid) -> Result<Option<AccessToken>, DbError> {
+        let row: Option<AccessTokenRow> = sqlx::query_as(
+            "SELECT name, secret_hash, permissions, created_at, expires_at FROM access_tokens WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(AccessTokenRow {
+            name,
+            secret_hash,
+            permissions,
+            created_at,
+            expires_at,
+        }) = row
+        else {
+            return Ok(None);
+        };
+
+        let policy = {
+            let json = self
+                .cipher
+                .decrypt(access_token_context(id).as_bytes(), &permissions)
+                .map_err(|error| DbError::Decrypt("access token permissions", error))?;
+            serde_json::from_slice(&json).map_err(|error| DbError::Deserialize("access token permissions", error))?
+        };
+
+        Ok(Some(AccessToken {
+            id,
+            name,
+            secret_hash: secret_hash
+                .try_into()
+                .map_err(|_| DbError::InvalidHash("access token secret"))?,
+            policy,
+            created_at: parse_utc_timestamp(&created_at, "access token creation")?,
+            expires_at: parse_utc_timestamp(&expires_at, "access token expiration")?,
+        }))
+    }
+
+    async fn access_tokens(&self) -> Result<Vec<AccessTokenSummary>, DbError> {
+        let rows: Vec<(String, String, String, String)> =
+            sqlx::query_as("SELECT id, name, created_at, expires_at FROM access_tokens ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
+
+        rows.into_iter()
+            .map(|(id, name, created_at, expires_at)| {
+                Ok(AccessTokenSummary {
+                    id: Uuid::parse_str(&id).map_err(|error| DbError::InvalidId("access token", error))?,
+                    name,
+                    created_at: parse_utc_timestamp(&created_at, "access token creation")?,
+                    expires_at: parse_utc_timestamp(&expires_at, "access token expiration")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn remove_access_token(&self, id: Uuid) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM access_tokens WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
 
         Ok(0 < result.rows_affected())
+    }
+
+    async fn access_tokens_using_bitbucket_token(&self, bitbucket_token_id: Uuid) -> Result<Vec<String>, DbError> {
+        let names = sqlx::query_scalar(
+            "SELECT access_tokens.name FROM access_tokens \
+             JOIN access_token_bitbucket_tokens ON access_token_bitbucket_tokens.access_token_id = access_tokens.id \
+             WHERE access_token_bitbucket_tokens.bitbucket_token_id = ? \
+             ORDER BY access_tokens.name",
+        )
+        .bind(bitbucket_token_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(names)
     }
 }
 
@@ -225,10 +411,25 @@ fn format_utc_timestamp(at: OffsetDateTime) -> Result<String, time::error::Forma
         .format(&Rfc3339)
 }
 
+fn parse_utc_timestamp(text: &str, what: &'static str) -> Result<OffsetDateTime, DbError> {
+    OffsetDateTime::parse(text, &Rfc3339).map_err(|error| DbError::InvalidTimestamp(what, error))
+}
+
+fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|db_error| db_error.is_foreign_key_violation())
+}
+
 fn is_unique_violation(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
         .is_some_and(|db_error| db_error.is_unique_violation())
+}
+
+/// Binds an access token's permissions ciphertext to its row, so that it does not decrypt under another ID.
+fn access_token_context(id: Uuid) -> String {
+    format!("access_tokens.permissions:{id}")
 }
 
 /// Binds a Bitbucket token ciphertext to its row, so that it does not decrypt under another ID.
@@ -236,6 +437,7 @@ fn bitbucket_token_context(id: Uuid) -> String {
     format!("bitbucket_tokens.token:{id}")
 }
 
+/// Binds a session ciphertext to its row, so that it does not decrypt under another ID.
 fn session_context(id: Uuid) -> String {
     format!("sessions.ciphertext:{id}")
 }
@@ -264,8 +466,6 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
-    use secret::Secret;
-
     use super::*;
     use crate::crypto::KEY_LEN;
 
@@ -544,5 +744,192 @@ mod tests {
                 .decrypt(bitbucket_token_context(Uuid::new_v4()).as_bytes(), &ciphertext)
                 .is_err()
         );
+    }
+
+    fn access_token(name: &str, bitbucket_tokens: &[Uuid]) -> AccessToken {
+        let rules: Vec<_> = bitbucket_tokens
+            .iter()
+            .map(|id| serde_json::json!({ "bitbucket_token": id, "actions": ["repo:read"], "project": "PROJ", "repository": "*" }))
+            .collect();
+
+        AccessToken {
+            id: Uuid::new_v4(),
+            name: name.to_owned(),
+            secret_hash: [9; 32],
+            policy: serde_json::from_value(serde_json::json!({ "version": 1, "rules": rules })).unwrap(),
+            created_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc() + time::Duration::days(30),
+        }
+    }
+
+    async fn access_token_count(db: &Db) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM access_tokens")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bitbucket_token_value_round_trip() {
+        let db = db().await;
+        let token = bitbucket_token("ci", "ATBB-secret");
+        db.add_bitbucket_token(&token).await.unwrap();
+
+        let found = db.bitbucket_token(token.id).await.unwrap().unwrap();
+
+        assert_eq!(
+            (found.name.as_str(), found.token.as_ref().as_str()),
+            ("ci", "ATBB-secret")
+        );
+        assert!(db.bitbucket_token(Uuid::new_v4()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn access_token_round_trip() {
+        let db = db().await;
+        let (read, write) = (bitbucket_token("read", "a"), bitbucket_token("write", "b"));
+        db.add_bitbucket_token(&read).await.unwrap();
+        db.add_bitbucket_token(&write).await.unwrap();
+
+        let token = access_token("ci", &[read.id, write.id, read.id]);
+        db.add_access_token(&token).await.unwrap();
+
+        let found = db.access_token(token.id).await.unwrap().unwrap();
+        assert_eq!(found.name, "ci");
+        assert_eq!(found.secret_hash, [9; 32]);
+        assert_eq!(found.policy.bitbucket_tokens(), token.policy.bitbucket_tokens());
+        assert_eq!(found.expires_at.unix_timestamp(), token.expires_at.unix_timestamp());
+        assert!(db.access_token(Uuid::new_v4()).await.unwrap().is_none());
+
+        let links: Vec<String> = sqlx::query_scalar(
+            "SELECT bitbucket_token_id FROM access_token_bitbucket_tokens WHERE access_token_id = ? ORDER BY 1",
+        )
+        .bind(token.id.to_string())
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        let mut expected = vec![read.id.to_string(), write.id.to_string()];
+        expected.sort();
+        assert_eq!(links, expected);
+
+        let summaries = db.access_tokens().await.unwrap();
+        assert_eq!((summaries.len(), summaries[0].id), (1, token.id));
+    }
+
+    #[tokio::test]
+    async fn access_token_permissions_stored_encrypted() {
+        let db = db().await;
+        let bitbucket = bitbucket_token("read", "a");
+        db.add_bitbucket_token(&bitbucket).await.unwrap();
+        let token = access_token("ci", &[bitbucket.id]);
+        db.add_access_token(&token).await.unwrap();
+
+        let permissions: Vec<u8> = sqlx::query_scalar("SELECT permissions FROM access_tokens")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(
+            !permissions
+                .windows(b"repo:read".len())
+                .any(|window| window == b"repo:read")
+        );
+
+        // Moving the ciphertext to another row makes it undecryptable.
+        let other = access_token("other", &[bitbucket.id]);
+        db.add_access_token(&other).await.unwrap();
+        sqlx::query("UPDATE access_tokens SET permissions = ? WHERE id = ?")
+            .bind(permissions)
+            .bind(other.id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(db.access_token(other.id).await, Err(DbError::Decrypt(..))));
+    }
+
+    #[tokio::test]
+    async fn access_token_constraints() {
+        let db = db().await;
+        let bitbucket = bitbucket_token("read", "a");
+        db.add_bitbucket_token(&bitbucket).await.unwrap();
+
+        db.add_access_token(&access_token("ci", &[bitbucket.id])).await.unwrap();
+
+        assert!(matches!(
+            db.add_access_token(&access_token("ci", &[bitbucket.id])).await,
+            Err(DbError::AccessTokenNameTaken)
+        ));
+        assert!(matches!(
+            db.add_access_token(&access_token("orphan", &[Uuid::new_v4()])).await,
+            Err(DbError::UnknownBitbucketToken)
+        ));
+        // A failed insert leaves nothing behind.
+        assert_eq!(access_token_count(&db).await, 1);
+    }
+
+    #[tokio::test]
+    async fn removing_bitbucket_token_removes_dependent_access_tokens() {
+        let db = db().await;
+        let (read, write) = (bitbucket_token("read", "a"), bitbucket_token("write", "b"));
+        db.add_bitbucket_token(&read).await.unwrap();
+        db.add_bitbucket_token(&write).await.unwrap();
+
+        let both = access_token("release-bot", &[read.id, write.id]);
+        let only_read = access_token("ci", &[read.id]);
+        let only_write = access_token("deployer", &[write.id]);
+        for token in [&both, &only_read, &only_write] {
+            db.add_access_token(token).await.unwrap();
+        }
+
+        assert_eq!(
+            db.access_tokens_using_bitbucket_token(read.id).await.unwrap(),
+            ["ci", "release-bot"]
+        );
+
+        assert!(db.remove_bitbucket_token(read.id).await.unwrap());
+
+        let remaining: Vec<_> = db
+            .access_tokens()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|token| token.name)
+            .collect();
+        assert_eq!(remaining, ["deployer"]);
+        assert!(
+            db.access_tokens_using_bitbucket_token(read.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.access_tokens_using_bitbucket_token(write.id).await.unwrap(),
+            ["deployer"]
+        );
+
+        let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM access_token_bitbucket_tokens")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(links, 1);
+    }
+
+    #[tokio::test]
+    async fn removing_access_token_removes_its_links() {
+        let db = db().await;
+        let bitbucket = bitbucket_token("read", "a");
+        db.add_bitbucket_token(&bitbucket).await.unwrap();
+        let token = access_token("ci", &[bitbucket.id]);
+        db.add_access_token(&token).await.unwrap();
+
+        assert!(db.remove_access_token(token.id).await.unwrap());
+        assert!(!db.remove_access_token(token.id).await.unwrap());
+
+        assert!(
+            db.access_tokens_using_bitbucket_token(bitbucket.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.remove_bitbucket_token(bitbucket.id).await.unwrap());
     }
 }

@@ -19,6 +19,7 @@ askama = "0.16"
 askama_web = { version = "0.16", features = ["axum-0.8"] }
 axum = "0.8"
 axum-extra = { version = "0.12", features = ["cookie"] }
+reqwest = { version = "0.13", features = ["stream"] }
 tower-http = { version = "0.7", features = ["trace"] }
 
 # Crypto
@@ -26,13 +27,17 @@ aes-gcm = { version = "0.11", features = ["zeroize"] }
 argon2 = "0.6"
 getrandom = "0.4"
 hkdf = "0.13"
+hmac = "0.13"
 secret = { git = "https://github.com/Devolutions/sspi-rs", rev = "2f447436fe6ff696aab9284bd18ab5f6410de5c1", version = "0.1", features = ["serde"] }
 sha2 = "0.11"
+subtle = "2.6"
 
 # Utils
 anyhow = "1.0"
 base64 = "0.23"
+globset = "0.4"
 hex = "0.4"
+percent-encoding = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

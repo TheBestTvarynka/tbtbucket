@@ -4,7 +4,7 @@ use secret::Secret;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::db::{BitbucketToken, BitbucketTokenDb, BitbucketTokenSummary, DbError};
+use crate::db::{AccessTokenDb, BitbucketToken, BitbucketTokenDb, BitbucketTokenSummary, DbError};
 use crate::{Error, Result};
 
 /// Longest accepted token name, in characters.
@@ -89,8 +89,16 @@ impl<D: BitbucketTokenDb> BitbucketTokenService<D> {
     }
 
     /// Removes the token and returns whether it existed.
+    /// Removes the token, together with every access token that uses it, and returns whether it existed.
     pub(crate) async fn remove(&self, id: Uuid) -> Result<bool> {
         Ok(self.db.remove_bitbucket_token(id).await?)
+    }
+}
+
+impl<D: AccessTokenDb> BitbucketTokenService<D> {
+    /// Returns the names of the access tokens that removing the Bitbucket token would remove too.
+    pub(crate) async fn dependent_access_tokens(&self, id: Uuid) -> Result<Vec<String>> {
+        Ok(self.db.access_tokens_using_bitbucket_token(id).await?)
     }
 }
 

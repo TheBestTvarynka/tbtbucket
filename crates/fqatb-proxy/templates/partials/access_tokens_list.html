@@ -1,0 +1,35 @@
+<div id="access-tokens-list">
+  {% if tokens.is_empty() %}
+  <p>No tokens found</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Name</th>
+        <th scope="col">Created (UTC)</th>
+        <th scope="col">Expires (UTC)</th>
+        <th scope="col"><span class="visually-hidden">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for token in tokens %}
+      <tr>
+        <td>{{ token.name }}</td>
+        <td>{{ token.created_at }}</td>
+        <td>{{ token.expires_at }}{% if token.expired %} <mark class="expired">expired</mark>{% endif %}</td>
+        <td class="row-actions">
+          <button
+            type="button"
+            class="outline danger"
+            hx-delete="/fgatbapi/access_tokens/{{ token.id }}"
+            hx-confirm="Remove the access token &#34;{{ token.name }}&#34;? Clients using it lose access immediately."
+            hx-target="#access-tokens-list"
+            hx-swap="outerHTML"
+          >Remove</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>

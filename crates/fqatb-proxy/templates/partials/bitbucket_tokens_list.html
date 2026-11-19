@@ -20,7 +20,7 @@
             type="button"
             class="outline danger"
             hx-delete="/fgatbapi/bitbucket_tokens/{{ token.id }}"
-            hx-confirm="Remove the token &quot;{{ token.name }}&quot;? This cannot be undone."
+            hx-confirm="{{ token.confirm }}"
             hx-target="#bitbucket-tokens-list"
             hx-swap="outerHTML"
           >Remove</button>

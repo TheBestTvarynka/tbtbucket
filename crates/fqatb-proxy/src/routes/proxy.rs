@@ -1,0 +1,731 @@
+//! The Bitbucket-compatible API: every request outside the admin panel.
+//!
+//! Clients authenticate with an access token exactly as they would with a Bitbucket HTTP access token.
+//! Each request is classified, checked against the token's policy, and forwarded to Bitbucket with a Bitbucket token.
+
+use axum::body::{Body, to_bytes};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use secret::Secret;
+use serde_json::json;
+use tracing::{debug, error, warn};
+
+use crate::bitbucket::classify::{BranchSource, classify};
+use crate::bitbucket::client::strip_response_headers;
+use crate::error::report;
+use crate::services::Decision;
+use crate::state::AppState;
+
+/// Largest request body the proxy reads to find branch names.
+const MAX_INSPECTED_BODY_LEN: usize = 1024 * 1024;
+
+/// Path prefixes owned by the proxy itself, which are never forwarded.
+const OWN_PREFIXES: [&str; 2] = ["/webapp", "/fgatbapi"];
+
+pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Response {
+    let path = request.uri().path();
+
+    if OWN_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let Some(presented) = credentials(request.headers()) else {
+        return unauthorized("authentication with an access token is required");
+    };
+
+    let token = match state.access_token_service.authenticate(presented.as_ref()).await {
+        Ok(Some(token)) => token,
+        Ok(None) => return unauthorized("access token is invalid or expired"),
+        Err(error) => return internal_error(&error),
+    };
+
+    let classified = match classify(request.method(), path) {
+        Ok(classified) => classified,
+        Err(unsupported) => {
+            warn!(access_token_id = %token.id, method = %request.method(), path, reason = %unsupported, "Denied unsupported request");
+            return bitbucket_error(StatusCode::FORBIDDEN, &unsupported.to_string());
+        }
+    };
+
+    let (parts, body) = request.into_parts();
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map_or(parts.uri.path(), |value| value.as_str())
+        .to_owned();
+
+    let needs_body = matches!(
+        classified.branches,
+        BranchSource::BodyBranchName | BranchSource::BodyPullRequestRefs | BranchSource::PullRequestUpdate(_)
+    );
+    let (inspected, forwarded) = if needs_body {
+        let Ok(bytes) = to_bytes(body, MAX_INSPECTED_BODY_LEN).await else {
+            return bitbucket_error(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large");
+        };
+        (Some(bytes.clone()), reqwest::Body::from(bytes))
+    } else {
+        (None, reqwest::Body::wrap_stream(body.into_data_stream()))
+    };
+
+    let allowed = match state
+        .proxy_service
+        .authorize(&token, &classified, inspected.as_deref())
+        .await
+    {
+        Ok(Decision::Allow(allowed)) => allowed,
+        Ok(Decision::Deny(reason)) => {
+            warn!(
+                access_token_id = %token.id,
+                action = %classified.action,
+                project = classified.project,
+                repository = classified.repository,
+                %reason,
+                "Denied request"
+            );
+            return bitbucket_error(StatusCode::FORBIDDEN, &reason);
+        }
+        Err(error) => return internal_error(&error),
+    };
+
+    debug!(
+        access_token_id = %token.id,
+        action = %classified.action,
+        project = classified.project,
+        repository = classified.repository,
+        rule = allowed.rule + 1,
+        bitbucket_token_id = %allowed.bitbucket_token_id,
+        "Allowed request"
+    );
+
+    let upstream = match state
+        .proxy_service
+        .forward(
+            parts.method,
+            &path_and_query,
+            parts.headers,
+            forwarded,
+            &allowed.bitbucket_token,
+        )
+        .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            error!(error = report(&error), "Forwarding to Bitbucket failed");
+            return bitbucket_error(StatusCode::BAD_GATEWAY, "Bitbucket is unreachable");
+        }
+    };
+
+    let mut response = Response::builder().status(upstream.status());
+    let mut headers = upstream.headers().clone();
+    strip_response_headers(&mut headers);
+    if let Some(response_headers) = response.headers_mut() {
+        *response_headers = headers;
+    }
+
+    response
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+/// Reads the access token the way Bitbucket reads HTTP access tokens: as a bearer token, or as the password of Basic
+/// authentication with any username.
+fn credentials(headers: &HeaderMap) -> Option<Secret<String>> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, credentials) = value.split_once(' ')?;
+    let credentials = credentials.trim();
+
+    if scheme.eq_ignore_ascii_case("bearer") {
+        return Some(Secret::new(credentials.to_owned()));
+    }
+
+    if scheme.eq_ignore_ascii_case("basic") {
+        let decoded = Secret::new(STANDARD.decode(credentials).ok()?);
+        let decoded = std::str::from_utf8(decoded.as_ref()).ok()?;
+        let (_, password) = decoded.split_once(':')?;
+        return Some(Secret::new(password.to_owned()));
+    }
+
+    None
+}
+
+/// An error in the format Bitbucket uses, so that clients report it like any other Bitbucket error.
+fn bitbucket_error(status: StatusCode, message: &str) -> Response {
+    let body = json!({ "errors": [{ "context": null, "message": message, "exceptionName": null }] });
+    (status, axum::Json(body)).into_response()
+}
+
+fn unauthorized(message: &str) -> Response {
+    let mut response = bitbucket_error(StatusCode::UNAUTHORIZED, message);
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"Bitbucket\""),
+    );
+    response
+}
+
+fn internal_error(error: &crate::Error) -> Response {
+    error!(error = report(error), "Request failed");
+    bitbucket_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::Router;
+    use axum::body::{Body, Bytes, to_bytes};
+    use axum::extract::Request;
+    use axum::http::{HeaderMap, StatusCode, header};
+    use axum::response::{IntoResponse as _, Response};
+    use secret::Secret;
+    use serde_json::json;
+    use time::{Duration, OffsetDateTime};
+    use tokio::net::TcpListener;
+    use tower::ServiceExt as _;
+    use uuid::Uuid;
+
+    use crate::routes::router;
+    use crate::state::{AppState, ServerState};
+
+    const REPO: &str = "/rest/api/latest/projects/PROJ/repos/api";
+
+    /// A request received by the fake Bitbucket server.
+    #[derive(Debug, Clone)]
+    struct Received {
+        method: String,
+        path_and_query: String,
+        headers: HeaderMap,
+        body: Bytes,
+    }
+
+    struct Fixture {
+        app: Router,
+        state: AppState,
+        received: Arc<Mutex<Vec<Received>>>,
+        read_token: Uuid,
+        write_token: Uuid,
+    }
+
+    /// Starts a fake Bitbucket server that records requests, knows a few pull requests, and sets a session cookie.
+    async fn fixture() -> Fixture {
+        let received = Arc::new(Mutex::new(Vec::new()));
+
+        let recorder = Arc::clone(&received);
+        let upstream = Router::new().fallback(move |request: Request| {
+            let recorder = Arc::clone(&recorder);
+            async move {
+                let (parts, body) = request.into_parts();
+                let body = to_bytes(body, usize::MAX).await.unwrap();
+                let path_and_query = parts.uri.path_and_query().unwrap().as_str().to_owned();
+                recorder.lock().unwrap().push(Received {
+                    method: parts.method.to_string(),
+                    path_and_query: path_and_query.clone(),
+                    headers: parts.headers,
+                    body,
+                });
+
+                let pull_request = |from: &str, from_project: &str, to: &str| {
+                    let reference = |id: &str, project: &str| {
+                        json!({ "id": format!("refs/heads/{id}"), "repository": { "slug": "api", "project": { "key": project } } })
+                    };
+                    json!({ "id": 1, "fromRef": reference(from, from_project), "toRef": reference(to, "PROJ") })
+                };
+                let pull_requests = format!("{REPO}/pull-requests/");
+                if parts.method == "GET" && path_and_query.starts_with(&pull_requests) {
+                    let fixture = match &path_and_query[pull_requests.len()..] {
+                        "1" => Some(pull_request("feature/login", "PROJ", "main")),
+                        "2" => Some(pull_request("feature/x", "~ALICE", "main")),
+                        "3" => Some(pull_request("hotfix/x", "PROJ", "release/1")),
+                        _ => None,
+                    };
+                    if let Some(fixture) = fixture {
+                        return axum::Json(fixture).into_response();
+                    }
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+
+                Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header(header::SET_COOKIE, "BITBUCKETSESSIONID=upstream-session")
+                    .header("x-upstream", "yes")
+                    .body(Body::from(r#"{"from":"bitbucket"}"#))
+                    .unwrap()
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+        let state = Arc::new(ServerState::for_tests_with_bitbucket(&format!("http://{address}")).await);
+        let read_token = state
+            .bitbucket_token_service
+            .add("read", Secret::new("ATBB-read".to_owned()))
+            .await
+            .unwrap();
+        let write_token = state
+            .bitbucket_token_service
+            .add("write", Secret::new("ATBB-write".to_owned()))
+            .await
+            .unwrap();
+
+        Fixture {
+            app: router(Arc::clone(&state)),
+            state,
+            received,
+            read_token,
+            write_token,
+        }
+    }
+
+    impl Fixture {
+        async fn issue(&self, rules: serde_json::Value) -> String {
+            let policy = serde_json::from_value(json!({ "version": 1, "rules": rules })).unwrap();
+            let issued = self
+                .state
+                .access_token_service
+                .issue(
+                    &Uuid::new_v4().to_string(),
+                    policy,
+                    OffsetDateTime::now_utc() + Duration::days(1),
+                )
+                .await
+                .unwrap();
+            issued.token.as_ref().clone()
+        }
+
+        async fn send(&self, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
+            let response = self.app.clone().oneshot(request).await.unwrap();
+            let (parts, body) = response.into_parts();
+            let body = to_bytes(body, usize::MAX).await.unwrap();
+            (parts.status, parts.headers, String::from_utf8(body.to_vec()).unwrap())
+        }
+
+        fn received(&self) -> Vec<Received> {
+            self.received.lock().unwrap().clone()
+        }
+
+        /// Requests forwarded on behalf of clients, leaving out the proxy's own pull request lookups.
+        fn forwarded(&self) -> Vec<Received> {
+            self.received()
+                .into_iter()
+                .filter(|request| request.headers.contains_key("x-client"))
+                .collect()
+        }
+    }
+
+    fn request(method: &str, path: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-client", "1")
+            .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+            .unwrap()
+    }
+
+    fn error_message(body: &str) -> String {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["errors"][0]["message"].as_str().unwrap().to_owned()
+    }
+
+    fn pr_body(from: &str, to: &str) -> serde_json::Value {
+        let reference = |id: &str| json!({ "id": format!("refs/heads/{id}"), "repository": { "slug": "api", "project": { "key": "PROJ" } } });
+        json!({ "title": "Change", "fromRef": reference(from), "toRef": reference(to) })
+    }
+
+    #[tokio::test]
+    async fn forwards_allowed_requests_with_the_bitbucket_token() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        let mut request = request("GET", &format!("{REPO}/pull-requests?state=OPEN&limit=5"), &token, None);
+        request
+            .headers_mut()
+            .insert(header::COOKIE, "fqatb_session=admin-session; other=1".parse().unwrap());
+        let (status, headers, body) = fixture.send(request).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body, r#"{"from":"bitbucket"}"#);
+        assert_eq!(headers.get("x-upstream").unwrap(), "yes");
+        assert!(headers.get(header::SET_COOKIE).is_none());
+
+        let forwarded = fixture.forwarded();
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(forwarded[0].method, "GET");
+        assert_eq!(
+            forwarded[0].path_and_query,
+            format!("{REPO}/pull-requests?state=OPEN&limit=5")
+        );
+        assert_eq!(
+            forwarded[0].headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer ATBB-read"
+        );
+        assert!(forwarded[0].headers.get(header::COOKIE).is_none());
+        assert!(!format!("{:?}", forwarded[0].headers).contains("fgatb_"));
+    }
+
+    #[tokio::test]
+    async fn accepts_basic_authentication_with_any_username() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        let basic = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("ci-bot:{token}"));
+        let request = Request::get(format!("{REPO}/browse/README.md"))
+            .header(header::AUTHORIZATION, format!("Basic {basic}"))
+            .header("x-client", "1")
+            .body(Body::empty())
+            .unwrap();
+
+        let (status, _, _) = fixture.send(request).await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            fixture.forwarded()[0].headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer ATBB-read"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_invalid_tokens() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        let missing = Request::get(REPO).body(Body::empty()).unwrap();
+        let tampered = request("GET", REPO, &format!("{}x", &token[..token.len() - 1]), None);
+        let bitbucket_token = request("GET", REPO, "ATBB-read", None);
+
+        for request in [missing, tampered, bitbucket_token] {
+            let (status, headers, body) = fixture.send(request).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                headers.get(header::WWW_AUTHENTICATE).unwrap(),
+                "Basic realm=\"Bitbucket\""
+            );
+            assert!(error_message(&body).contains("access token"));
+        }
+
+        assert!(fixture.received().is_empty());
+    }
+
+    #[tokio::test]
+    async fn denies_unsupported_and_unallowed_requests_without_forwarding() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        let cases = [
+            ("PUT", REPO.to_owned(), "endpoint is not supported"),
+            (
+                "GET",
+                "/rest/api/latest/dashboard/pull-requests".to_owned(),
+                "endpoint is not supported",
+            ),
+            (
+                "GET",
+                "/scm/proj/api.git/info/refs".to_owned(),
+                "Git over HTTPS is not supported yet",
+            ),
+            ("GET", format!("{REPO}/../web"), "path is malformed"),
+            (
+                "POST",
+                format!("{REPO}/pull-requests/1/merge"),
+                "access token does not allow pr:merge on PROJ/api",
+            ),
+            (
+                "GET",
+                "/rest/api/latest/projects/PROJ/repos/web".to_owned(),
+                "access token does not allow repo:read on PROJ/web",
+            ),
+        ];
+
+        for (method, path, message) in cases {
+            let (status, _, body) = fixture.send(request(method, &path, &token, None)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+            assert!(error_message(&body).starts_with(message), "{method} {path}: {body}");
+        }
+
+        assert!(fixture.received().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pull_request_creation_checks_body_branches() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.write_token, "actions": ["pr:create"], "project": "PROJ", "repository": "api",
+                            "branches": { "source": ["feature/**"], "target": ["main"] } }]))
+            .await;
+
+        let allowed = pr_body("feature/login", "main");
+        let (status, _, _) = fixture
+            .send(request(
+                "POST",
+                &format!("{REPO}/pull-requests"),
+                &token,
+                Some(allowed.clone()),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let forwarded = fixture.forwarded();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&forwarded[0].body).unwrap(),
+            allowed
+        );
+        assert_eq!(
+            forwarded[0].headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer ATBB-write"
+        );
+
+        for (body, message) in [
+            (
+                pr_body("bugfix/x", "main"),
+                "access token does not allow pr:create on PROJ/api from bugfix/x to main",
+            ),
+            (
+                pr_body("feature/x", "release/1"),
+                "access token does not allow pr:create on PROJ/api from feature/x to release/1",
+            ),
+            (
+                json!({ "title": "No refs" }),
+                "request body is invalid: body has no `fromRef`",
+            ),
+        ] {
+            let (status, _, response) = fixture
+                .send(request("POST", &format!("{REPO}/pull-requests"), &token, Some(body)))
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(error_message(&response), message);
+        }
+
+        let mut fork = pr_body("feature/x", "main");
+        fork["fromRef"]["repository"]["project"]["key"] = json!("~ALICE");
+        let (status, _, response) = fixture
+            .send(request("POST", &format!("{REPO}/pull-requests"), &token, Some(fork)))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(error_message(&response).contains("another repository"));
+
+        assert_eq!(fixture.forwarded().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn existing_pull_requests_are_checked_by_their_branches() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.write_token, "actions": ["pr:merge", "pr_comment:create"], "project": "PROJ", "repository": "api",
+                            "branches": { "target": ["main"] } }]))
+            .await;
+
+        // Pull request 1 targets `main`.
+        let (status, _, _) = fixture
+            .send(request(
+                "POST",
+                &format!("{REPO}/pull-requests/1/merge?version=3"),
+                &token,
+                None,
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // Pull request 3 targets `release/1`.
+        let (status, _, body) = fixture
+            .send(request(
+                "POST",
+                &format!("{REPO}/pull-requests/3/comments"),
+                &token,
+                Some(json!({ "text": "LGTM" })),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            error_message(&body),
+            "access token does not allow pr_comment:create on PROJ/api from hotfix/x to release/1"
+        );
+
+        // Pull request 2 comes from a fork, and pull request 9 does not exist.
+        for id in [2, 9] {
+            let (status, _, _) = fixture
+                .send(request(
+                    "POST",
+                    &format!("{REPO}/pull-requests/{id}/merge"),
+                    &token,
+                    None,
+                ))
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+
+        let received = fixture.received();
+        let lookups: Vec<_> = received.iter().filter(|request| request.method == "GET").collect();
+        assert_eq!(lookups.len(), 4);
+        assert!(
+            lookups
+                .iter()
+                .all(|lookup| lookup.headers.get(header::AUTHORIZATION).unwrap() == "Bearer ATBB-write")
+        );
+        let merges: Vec<_> = received.iter().filter(|request| request.method == "POST").collect();
+        assert_eq!(merges.len(), 1);
+        assert_eq!(
+            merges[0].path_and_query,
+            format!("{REPO}/pull-requests/1/merge?version=3")
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_needs_permission_for_both_targets() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.write_token, "actions": ["pr:update"], "project": "PROJ", "repository": "api",
+                            "branches": { "target": ["main", "develop"] } }]))
+            .await;
+        let update = |target: &str| json!({ "version": 1, "title": "New title", "toRef": { "id": format!("refs/heads/{target}") } });
+
+        let (status, _, _) = fixture
+            .send(request(
+                "PUT",
+                &format!("{REPO}/pull-requests/1"),
+                &token,
+                Some(json!({ "version": 1, "title": "Renamed" })),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, _, _) = fixture
+            .send(request(
+                "PUT",
+                &format!("{REPO}/pull-requests/1"),
+                &token,
+                Some(update("develop")),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, _, body) = fixture
+            .send(request(
+                "PUT",
+                &format!("{REPO}/pull-requests/1"),
+                &token,
+                Some(update("release/2")),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(error_message(&body).ends_with("from feature/login to release/2"));
+
+        // Pull request 3 targets `release/1`, so moving it to `main` is not allowed either.
+        let (status, _, _) = fixture
+            .send(request(
+                "PUT",
+                &format!("{REPO}/pull-requests/3"),
+                &token,
+                Some(update("main")),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rules_choose_their_bitbucket_token() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([
+                { "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "docs" },
+                { "bitbucket_token": fixture.write_token, "actions": ["branch:create"], "project": "PROJ", "repository": "api",
+                  "branches": { "branch": ["bot/**"] } }
+            ]))
+            .await;
+
+        fixture
+            .send(request(
+                "GET",
+                "/rest/api/1.0/projects/PROJ/repos/docs/raw/README.md",
+                &token,
+                None,
+            ))
+            .await;
+        fixture
+            .send(request(
+                "POST",
+                "/rest/branch-utils/latest/projects/PROJ/repos/api/branches",
+                &token,
+                Some(json!({ "name": "bot/update-deps", "startPoint": "main" })),
+            ))
+            .await;
+        let (status, _, _) = fixture
+            .send(request(
+                "POST",
+                "/rest/branch-utils/latest/projects/PROJ/repos/api/branches",
+                &token,
+                Some(json!({ "name": "main-copy", "startPoint": "main" })),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let authorizations: Vec<_> = fixture
+            .forwarded()
+            .iter()
+            .map(|request| {
+                request
+                    .headers
+                    .get(header::AUTHORIZATION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(authorizations, ["Bearer ATBB-read", "Bearer ATBB-write"]);
+    }
+
+    #[tokio::test]
+    async fn removed_tokens_stop_working() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+        assert_eq!(
+            fixture.send(request("GET", REPO, &token, None)).await.0,
+            StatusCode::CREATED
+        );
+
+        // Removing the Bitbucket token removes the access token that uses it.
+        fixture
+            .state
+            .bitbucket_token_service
+            .remove(fixture.read_token)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.send(request("GET", REPO, &token, None)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_paths_are_never_forwarded() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        for path in ["/webapp/unknown", "/fgatbapi/unknown", "/webapp"] {
+            let (status, _, _) = fixture.send(request("POST", path, &token, None)).await;
+            assert_ne!(status, StatusCode::CREATED, "{path}");
+        }
+
+        assert!(fixture.received().is_empty());
+    }
+}
