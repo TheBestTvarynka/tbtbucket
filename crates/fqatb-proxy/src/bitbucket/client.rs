@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderMap, HeaderName, Method, header};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use reqwest::{Body, Response, Url};
+use reqwest::{Body, Certificate, Response, Url};
 use secret::Secret;
 
 /// Characters escaped in a path segment: everything except RFC 3986 unreserved characters.
@@ -38,12 +38,18 @@ pub(crate) enum ClientError {
 }
 
 impl BitbucketClient {
-    pub(crate) fn new(base: &Url) -> Result<Self, reqwest::Error> {
-        let http = reqwest::Client::builder()
+    /// With `ca_certs`, Bitbucket's certificate must chain to one of them, and the system's trusted CAs are ignored.
+    pub(crate) fn new(base: &Url, ca_certs: Option<Vec<Certificate>>) -> Result<Self, reqwest::Error> {
+        let mut builder = reqwest::Client::builder()
             // Redirects are the client's business; following them here would hide them and could leave Bitbucket.
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .build()?;
+            .connect_timeout(Duration::from_secs(10));
+
+        if let Some(ca_certs) = ca_certs {
+            builder = builder.tls_certs_only(ca_certs);
+        }
+
+        let http = builder.build()?;
 
         Ok(Self {
             http,
@@ -169,6 +175,62 @@ mod tests {
         let mut remaining: Vec<_> = headers.keys().map(HeaderName::as_str).collect();
         remaining.sort_unstable();
         assert_eq!(remaining, ["accept", "content-type", "x-atlassian-token"]);
+    }
+
+    /// Starts an HTTPS server for `localhost` whose certificate is signed by the test CA, and returns its base URL.
+    async fn https_bitbucket() -> Url {
+        use axum_server::Handle;
+        use axum_server::tls_rustls::RustlsConfig;
+
+        let config = RustlsConfig::from_pem(
+            include_bytes!("../../tests/fixtures/tls/server.crt").to_vec(),
+            include_bytes!("../../tests/fixtures/tls/server.key").to_vec(),
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new().fallback(|| async { axum::Json(serde_json::json!({ "id": 1 })) });
+
+        let handle = Handle::<std::net::SocketAddr>::new();
+        let server = axum_server::bind_rustls("127.0.0.1:0".parse().unwrap(), config).handle(handle.clone());
+        tokio::spawn(server.serve(app.into_make_service()));
+        let address = handle.listening().await.unwrap();
+
+        format!("https://localhost:{}", address.port()).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn trusts_the_configured_ca() {
+        let base = https_bitbucket().await;
+        let ca_certs = Certificate::from_pem_bundle(include_bytes!("../../tests/fixtures/tls/ca.crt")).unwrap();
+        let token = Secret::new("ATBB-x".to_owned());
+
+        let client = BitbucketClient::new(&base, Some(ca_certs)).unwrap();
+        assert_eq!(
+            client.pull_request(&token, "PROJ", "api", 1).await.unwrap(),
+            br#"{"id":1}"#
+        );
+
+        // Without it, the test CA is unknown.
+        let client = BitbucketClient::new(&base, None).unwrap();
+        assert!(matches!(
+            client.pull_request(&token, "PROJ", "api", 1).await,
+            Err(ClientError::Request(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_configured_ca_replaces_the_system_cas() {
+        // The server certificate is not a CA, so nothing it is given to verify chains to it.
+        let base = https_bitbucket().await;
+        let unrelated = Certificate::from_pem_bundle(include_bytes!("../../tests/fixtures/tls/server.crt")).unwrap();
+
+        let client = BitbucketClient::new(&base, Some(unrelated)).unwrap();
+        assert!(
+            client
+                .pull_request(&Secret::new("ATBB-x".to_owned()), "PROJ", "api", 1)
+                .await
+                .is_err()
+        );
     }
 
     #[test]

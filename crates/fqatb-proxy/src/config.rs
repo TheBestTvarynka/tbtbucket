@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use reqwest::Url;
+use reqwest::{Certificate, Url};
 use secret::Secret;
 
 use crate::crypto::KEY_LEN;
@@ -21,6 +21,8 @@ pub(crate) struct Config {
     pub(crate) encryption_key: Secret<[u8; KEY_LEN]>,
     /// `FQATB_BITBUCKET_URL`, the base URL of the Bitbucket Data Center server, such as `https://bitbucket.example.com`.
     pub(crate) bitbucket_url: Url,
+    /// `FQATB_BITBUCKET_CA_CERT`: when set, the only CAs trusted for the Bitbucket server's certificate.
+    pub(crate) bitbucket_ca_certs: Option<Vec<Certificate>>,
     /// `FQATB_TLS_CERT` and `FQATB_TLS_KEY`; without them the proxy serves plain HTTP.
     pub(crate) tls: Option<TlsConfig>,
 }
@@ -46,6 +48,13 @@ impl TlsConfig {
             (None, Some(_)) => anyhow::bail!("FQATB_TLS_KEY is set but FQATB_TLS_CERT is not"),
         }
     }
+}
+
+/// Parses every certificate in a PEM bundle, which must hold at least one.
+fn load_ca_certs(pem: &[u8]) -> anyhow::Result<Vec<Certificate>> {
+    let certs = Certificate::from_pem_bundle(pem).context("failed to parse the PEM certificates")?;
+    anyhow::ensure!(!certs.is_empty(), "the file contains no PEM certificates");
+    Ok(certs)
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -80,6 +89,15 @@ impl Config {
             url
         };
 
+        let bitbucket_ca_certs = non_empty(env::var("FQATB_BITBUCKET_CA_CERT").ok())
+            .map(|path| {
+                load_ca_certs(
+                    &std::fs::read(&path).with_context(|| format!("failed to read FQATB_BITBUCKET_CA_CERT {path}"))?,
+                )
+                .with_context(|| format!("invalid FQATB_BITBUCKET_CA_CERT {path}"))
+            })
+            .transpose()?;
+
         let tls = TlsConfig::from_paths(env::var("FQATB_TLS_CERT").ok(), env::var("FQATB_TLS_KEY").ok())?;
 
         Ok(Self {
@@ -87,6 +105,7 @@ impl Config {
             database_url,
             encryption_key,
             bitbucket_url,
+            bitbucket_ca_certs,
             tls,
         })
     }
@@ -98,6 +117,28 @@ mod tests {
 
     fn paths(cert: Option<&str>, key: Option<&str>) -> anyhow::Result<Option<TlsConfig>> {
         TlsConfig::from_paths(cert.map(str::to_owned), key.map(str::to_owned))
+    }
+
+    #[test]
+    fn ca_certs_must_be_pem_certificates() {
+        assert_eq!(
+            load_ca_certs(include_bytes!("../tests/fixtures/tls/ca.crt"))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let bundle = [
+            include_str!("../tests/fixtures/tls/ca.crt"),
+            include_str!("../tests/fixtures/tls/server.crt"),
+        ]
+        .concat();
+        assert_eq!(load_ca_certs(bundle.as_bytes()).unwrap().len(), 2);
+
+        assert!(load_ca_certs(b"").is_err());
+        assert!(load_ca_certs(b"not a certificate").is_err());
+        // A private key is not a certificate.
+        assert!(load_ca_certs(include_bytes!("../tests/fixtures/tls/server.key")).is_err());
     }
 
     #[test]

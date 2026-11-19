@@ -33,6 +33,7 @@ impl ServerState {
             database_url,
             encryption_key,
             bitbucket_url,
+            bitbucket_ca_certs,
             ..
         } = config;
 
@@ -42,7 +43,7 @@ impl ServerState {
         drop(encryption_key);
 
         let db = Arc::new(Db::connect(&database_url, db_cipher).await?);
-        let client = BitbucketClient::new(&bitbucket_url).map_err(crate::Error::HttpClient)?;
+        let client = BitbucketClient::new(&bitbucket_url, bitbucket_ca_certs).map_err(crate::Error::HttpClient)?;
 
         let state = Self {
             admin_service: AdminService::new(Arc::clone(&db)),
@@ -77,7 +78,7 @@ impl ServerState {
 
         let master_key = Secret::new([1; KEY_LEN]);
         let db = Arc::new(Db::in_memory(Cipher::for_database(&master_key)).await);
-        let client = BitbucketClient::new(&bitbucket_url.parse().unwrap()).unwrap();
+        let client = BitbucketClient::new(&bitbucket_url.parse().unwrap(), None).unwrap();
 
         Self {
             admin_service: AdminService::new(Arc::clone(&db)),
