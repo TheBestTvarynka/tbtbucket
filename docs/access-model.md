@@ -233,17 +233,17 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 
 | Action | Endpoints | Branch attributes |
 | --- | --- | --- |
-| `repo:read` | Every read in the repository: `GET {repo}`; `GET` on its `browse`, `raw`, `files`, `commits`, `compare`, `diff` and `tags` subtrees; `GET {repo}/branches` and `GET branch-utils/{version}/…/branches/info/{commitId}`; `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}` and its `activities`, `changes`, `commits`, `diff`, `diff-stats-summary`, `merge` (merge check); `GET` on its `comments` and `blocker-comments`. Other methods on these paths, such as creating tags or posting build statuses, are not `repo:read`. | – |
+| `repo:read` | Every read in the repository: `GET {repo}`; `GET` on its `browse`, `raw`, `files`, `commits` (including commit comments, builds and deployments), `compare`, `diff`, `last-modified` and `tags` subtrees; `GET {repo}/changes`, `participants`, `default-branch`, `branches/default`, `ref-change-activities` and `ref-change-activities/branches`; `GET {repo}/branches` and `GET branch-utils/{version}/…/branches/info/{commitId}`; `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}`, `{id}.diff` and `{id}.patch`, and its `activities`, `changes`, `commits`, `diff`, `diff-stats-summary`, `merge` (merge check), `merge-base`, `commit-message-suggestion`, `participants`, `review` and `auto-merge`; `GET` on its `comments` and `blocker-comments`; `GET jira/{version}/…/pull-requests/{id}/issues`; `GET insights/{version}/…/commits/{commitId}/reports` and `…/annotations` subtrees. Other methods on these paths, such as creating tags or posting build statuses, are not `repo:read`. | – |
 | `branch:create` | `POST {repo}/branches`, `POST branch-utils/{version}/…/branches` | `branch` from `name` in the body |
 | `branch:delete` | `DELETE branch-utils/{version}/…/branches` | `branch` from `name` in the body |
 | `pr:create` | `POST {repo}/pull-requests` | `source` and `target` from `fromRef` and `toRef` in the body |
-| `pr:update` | `PUT {repo}/pull-requests/{id}` | `source` and `target` of the existing pull request, and `target` from `toRef` in the body if it changes |
-| `pr:review` | `PUT`, `DELETE {repo}/pull-requests/{id}/participants/{userSlug}`, `POST`, `DELETE {repo}/pull-requests/{id}/approve` | `source` and `target` of the existing pull request |
+| `pr:update` | `PUT {repo}/pull-requests/{id}`; `POST`, `DELETE {repo}/pull-requests/{id}/participants`, which add and remove reviewers | `source` and `target` of the existing pull request, and `target` from `toRef` in the body if it changes |
+| `pr:review` | `PUT`, `DELETE {repo}/pull-requests/{id}/participants/{userSlug}`, `POST`, `DELETE {repo}/pull-requests/{id}/approve`, `PUT`, `DELETE {repo}/pull-requests/{id}/review`, which complete the token's own review or discard it | `source` and `target` of the existing pull request |
 | `pr:merge` | `POST {repo}/pull-requests/{id}/merge` | `source` and `target` of the existing pull request |
 | `pr:decline` | `POST {repo}/pull-requests/{id}/decline` | `source` and `target` of the existing pull request |
 | `pr:reopen` | `POST {repo}/pull-requests/{id}/reopen` | `source` and `target` of the existing pull request |
 | `pr:delete` | `DELETE {repo}/pull-requests/{id}` | `source` and `target` of the existing pull request |
-| `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments` | `source` and `target` of the existing pull request |
+| `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments`; `PUT`, `DELETE comment-likes/{version}/…/pull-requests/{id}/comments/{commentId}/reactions/{emoticon}`, since a reaction is the token's own lightweight comment | `source` and `target` of the existing pull request |
 | `pr_comment:update` | `PUT {repo}/pull-requests/{id}/comments/{commentId}`, `PUT …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `pr_comment:delete` | `DELETE {repo}/pull-requests/{id}/comments/{commentId}`, `DELETE …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `branch:push` | Git push, see [Git over HTTPS](#git-over-https) | `branch` from the pushed ref |
@@ -256,7 +256,8 @@ In particular, these are denied:
 - `access-tokens/{version}/…`, which manage Bitbucket tokens and would let a client escalate its access;
 - `PUT {repo}/browse/{path}`, which edits a file and commits it to a branch;
 - `{repo}/pull-requests/{id}/comments/{commentId}/apply-suggestion`, which commits to the source branch;
-- `comment-likes/{version}/…` reactions;
+- reactions on commit comments, and writes on commit comments;
+- `{repo}/pull-requests/{id}/auto-merge` and `…/watch` writes;
 - `api/{version}/dashboard/pull-requests` and `api/{version}/inbox/pull-requests`, which list pull requests across repositories and cannot be limited to the repositories a policy names.
 
 Pull requests whose `fromRef.repository` differs from the repository in the URL, such as pull requests from forks, are denied.

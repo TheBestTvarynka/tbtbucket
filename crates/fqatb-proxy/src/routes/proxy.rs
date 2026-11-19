@@ -637,6 +637,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pull_request_lifecycle_and_comments() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([
+                { "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" },
+                { "bitbucket_token": fixture.write_token, "actions": ["pr:update", "pr:decline", "pr:delete", "pr_comment:*"],
+                  "project": "PROJ", "repository": "api", "branches": { "target": ["main"] } }
+            ]))
+            .await;
+        let pr = format!("{REPO}/pull-requests/1");
+        let reaction =
+            "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/1/comments/7/reactions/thumbsup";
+
+        // Reads go out with the read token, whatever plugin serves them.
+        for path in [
+            format!("{REPO}/pull-requests/1.diff"),
+            format!("{pr}/activities?start=0&limit=25"),
+            format!("{pr}/comments/7"),
+            format!("{REPO}/commits?until=main"),
+            "/rest/jira/latest/projects/PROJ/repos/api/pull-requests/1/issues".to_owned(),
+            "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports".to_owned(),
+        ] {
+            fixture.send(request("GET", &path, &token, None)).await;
+        }
+
+        // Writes on pull request 1, which targets `main`, go out with the write token.
+        let writes = [
+            (
+                "POST",
+                format!("{pr}/participants"),
+                Some(json!({ "user": { "name": "bob" }, "role": "REVIEWER" })),
+            ),
+            ("DELETE", format!("{pr}/participants?username=bob"), None),
+            ("POST", format!("{pr}/comments"), Some(json!({ "text": "Looks good" }))),
+            (
+                "PUT",
+                format!("{pr}/comments/7"),
+                Some(json!({ "version": 0, "text": "Looks great" })),
+            ),
+            ("PUT", reaction.to_owned(), None),
+            ("DELETE", reaction.to_owned(), None),
+            ("DELETE", format!("{pr}/comments/7?version=1"), None),
+            ("POST", format!("{pr}/decline?version=2"), None),
+            ("DELETE", pr.clone(), Some(json!({ "version": 3 }))),
+        ];
+        for (method, path, body) in &writes {
+            let (status, _, response) = fixture.send(request(method, path, &token, body.clone())).await;
+            assert_eq!(status, StatusCode::CREATED, "{method} {path}: {response}");
+        }
+
+        let forwarded = fixture.forwarded();
+        assert_eq!(forwarded.len(), 6 + writes.len());
+        for (sent, (method, path, body)) in forwarded[6..].iter().zip(&writes) {
+            assert_eq!(
+                (sent.method.as_str(), sent.path_and_query.as_str()),
+                (*method, path.as_str())
+            );
+            assert_eq!(sent.headers.get(header::AUTHORIZATION).unwrap(), "Bearer ATBB-write");
+            if let Some(body) = body {
+                assert_eq!(&serde_json::from_slice::<serde_json::Value>(&sent.body).unwrap(), body);
+            }
+        }
+        assert!(
+            forwarded[..6]
+                .iter()
+                .all(|sent| sent.headers.get(header::AUTHORIZATION).unwrap() == "Bearer ATBB-read")
+        );
+
+        // Pull request 3 targets `release/1`, and suggestions commit to the source branch.
+        for (method, path, message) in [
+            (
+                "POST",
+                format!("{REPO}/pull-requests/3/participants"),
+                "access token does not allow pr:update",
+            ),
+            (
+                "PUT",
+                "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/3/comments/7/reactions/thumbsup"
+                    .to_owned(),
+                "access token does not allow pr_comment:create",
+            ),
+            (
+                "POST",
+                format!("{REPO}/pull-requests/3/decline"),
+                "access token does not allow pr:decline",
+            ),
+            (
+                "POST",
+                format!("{pr}/comments/7/apply-suggestion"),
+                "endpoint is not supported",
+            ),
+            ("POST", format!("{pr}/merge"), "access token does not allow pr:merge"),
+        ] {
+            let (status, _, body) = fixture.send(request(method, &path, &token, None)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+            assert!(error_message(&body).starts_with(message), "{method} {path}: {body}");
+        }
+        assert_eq!(fixture.forwarded().len(), 6 + writes.len());
+    }
+
+    #[tokio::test]
     async fn rules_choose_their_bitbucket_token() {
         let fixture = fixture().await;
         let token = fixture

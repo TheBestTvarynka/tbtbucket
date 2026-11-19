@@ -71,7 +71,7 @@ pub(crate) fn classify(method: &Method, raw_path: &str) -> Result<Classified, Un
         ["scm", ..] => Err(Unsupported::Git),
         [
             "rest",
-            plugin @ ("api" | "branch-utils"),
+            plugin @ ("api" | "branch-utils" | "comment-likes" | "jira" | "insights"),
             "1.0" | "latest",
             "projects",
             project,
@@ -83,10 +83,12 @@ pub(crate) fn classify(method: &Method, raw_path: &str) -> Result<Classified, Un
                 return Err(Unsupported::PersonalRepository);
             }
 
-            let (action, branches) = if *plugin == "api" {
-                classify_api(method, tail)
-            } else {
-                classify_branch_utils(method, tail)
+            let (action, branches) = match *plugin {
+                "api" => classify_api(method, tail),
+                "branch-utils" => classify_branch_utils(method, tail),
+                "comment-likes" => classify_comment_likes(method, tail),
+                "jira" => classify_jira(method, tail),
+                _ => classify_insights(method, tail),
             }
             .ok_or(Unsupported::Endpoint)?;
 
@@ -136,14 +138,20 @@ fn classify_api(method: &Method, tail: &[&str]) -> Option<(Action, BranchSource)
 
     let classified = match tail {
         [] if get => (Action::RepoRead, B::None),
-        ["browse" | "files" | "commits" | "diff" | "tags", ..] if get => (Action::RepoRead, B::None),
+        ["browse" | "files" | "commits" | "diff" | "tags" | "last-modified", ..] if get => (Action::RepoRead, B::None),
         ["raw" | "compare", _, ..] if get => (Action::RepoRead, B::None),
+        ["changes" | "participants" | "default-branch" | "ref-change-activities"] if get => (Action::RepoRead, B::None),
+        ["ref-change-activities", "branches"] if get => (Action::RepoRead, B::None),
 
         ["branches"] if get => (Action::RepoRead, B::None),
+        ["branches", "default"] if get => (Action::RepoRead, B::None),
         ["branches"] if *method == Method::POST => (Action::BranchCreate, B::BodyBranchName),
 
         ["pull-requests"] if get => (Action::RepoRead, B::None),
         ["pull-requests"] if *method == Method::POST => (Action::PrCreate, B::BodyPullRequestRefs),
+
+        // `{id}.diff` and `{id}.patch` render the whole pull request as text.
+        ["pull-requests", file] if get && pull_request_file(file).is_some() => (Action::RepoRead, B::None),
 
         ["pull-requests", id, tail @ ..] => {
             let id = pull_request_id(id)?;
@@ -173,12 +181,20 @@ fn classify_pull_request(method: &Method, id: u64, tail: &[&str]) -> Option<(Act
         // `GET …/merge` only checks whether the pull request can be merged.
         // Reading never depends on branches: `repo:read` covers every read in the repository.
         (["merge"], _) if get => (Action::RepoRead, B::None),
+        (["merge-base" | "commit-message-suggestion" | "participants" | "review" | "auto-merge"], _) if get => {
+            (Action::RepoRead, B::None)
+        }
+
+        // Adding and removing reviewers edits the pull request; the body names a user, not branches.
+        (["participants"], &Method::POST | &Method::DELETE) => (Action::PrUpdate, pull_request),
 
         (["merge"], &Method::POST) => (Action::PrMerge, pull_request),
         (["decline"], &Method::POST) => (Action::PrDecline, pull_request),
         (["reopen"], &Method::POST) => (Action::PrReopen, pull_request),
         (["approve"], &Method::POST | &Method::DELETE) => (Action::PrReview, pull_request),
         (["participants", _], &Method::PUT | &Method::DELETE) => (Action::PrReview, pull_request),
+        // Completes the token's own review, publishing its pending comments, or discards it.
+        (["review"], &Method::PUT | &Method::DELETE) => (Action::PrReview, pull_request),
 
         (["comments" | "blocker-comments"], _) if get => (Action::RepoRead, B::None),
         (["comments" | "blocker-comments"], &Method::POST) => (Action::PrCommentCreate, pull_request),
@@ -208,9 +224,51 @@ fn classify_branch_utils(method: &Method, tail: &[&str]) -> Option<(Action, Bran
     }
 }
 
+/// `/rest/comment-likes/{version}/projects/{key}/repos/{slug}/…`
+///
+/// A reaction is the token's own lightweight comment, so adding and removing one both need `pr_comment:create`.
+/// Reactions on commit comments are not supported.
+fn classify_comment_likes(method: &Method, tail: &[&str]) -> Option<(Action, BranchSource)> {
+    match (tail, method) {
+        (["pull-requests", id, "comments", comment, "reactions", _], &Method::PUT | &Method::DELETE) => {
+            let id = pull_request_id(id)?;
+            pull_request_id(comment)?;
+            Some((Action::PrCommentCreate, BranchSource::PullRequest(id)))
+        }
+        _ => None,
+    }
+}
+
+/// `/rest/jira/{version}/projects/{key}/repos/{slug}/…`
+fn classify_jira(method: &Method, tail: &[&str]) -> Option<(Action, BranchSource)> {
+    match (tail, method) {
+        (["pull-requests", id, "issues"], &Method::GET) => {
+            pull_request_id(id)?;
+            Some((Action::RepoRead, BranchSource::None))
+        }
+        _ => None,
+    }
+}
+
+/// `/rest/insights/{version}/projects/{key}/repos/{slug}/…`: Code Insights reports and annotations on commits.
+fn classify_insights(method: &Method, tail: &[&str]) -> Option<(Action, BranchSource)> {
+    match (tail, method) {
+        (["commits", _, "reports" | "annotations", ..], &Method::GET) => Some((Action::RepoRead, BranchSource::None)),
+        _ => None,
+    }
+}
+
+/// The pull request ID in `{id}.diff` or `{id}.patch`.
+fn pull_request_file(segment: &str) -> Option<u64> {
+    let id = segment
+        .strip_suffix(".diff")
+        .or_else(|| segment.strip_suffix(".patch"))?;
+    pull_request_id(id)
+}
+
 fn pull_request_id(segment: &str) -> Option<u64> {
     // `u64::from_str` accepts a leading `+`, which Bitbucket would not read as the same ID.
-    if !segment.bytes().all(|byte| byte.is_ascii_digit()) {
+    if segment.is_empty() || !segment.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
 
@@ -263,6 +321,25 @@ mod tests {
             "/diff/src/lib.rs",
             "/tags",
             "/tags/v1.0",
+            "/changes",
+            "/last-modified",
+            "/last-modified/src",
+            "/participants",
+            "/default-branch",
+            "/branches/default",
+            "/ref-change-activities",
+            "/ref-change-activities/branches",
+            "/commits/abc123/comments",
+            "/commits/abc123/comments/5",
+            "/commits/abc123/builds",
+            "/commits/abc123/pull-requests",
+            "/pull-requests/42.diff",
+            "/pull-requests/42.patch",
+            "/pull-requests/42/merge-base",
+            "/pull-requests/42/commit-message-suggestion",
+            "/pull-requests/42/participants",
+            "/pull-requests/42/review",
+            "/pull-requests/42/auto-merge",
         ] {
             assert_eq!(
                 ok(Method::GET, &format!("{REPO}{tail}")),
@@ -426,10 +503,66 @@ mod tests {
                 Action::PrCommentDelete,
                 existing,
             ),
+            (Method::POST, format!("{pr}/participants"), Action::PrUpdate, existing),
+            (Method::DELETE, format!("{pr}/participants"), Action::PrUpdate, existing),
+            (Method::PUT, format!("{pr}/review"), Action::PrReview, existing),
+            (Method::DELETE, format!("{pr}/review"), Action::PrReview, existing),
         ];
 
         for (method, path, action, branches) in cases {
             assert_eq!(ok(method.clone(), &path), (action, branches), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn other_plugins() {
+        let reaction =
+            "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/42/comments/7/reactions/thumbsup";
+        for method in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                ok(method, reaction),
+                (Action::PrCommentCreate, BranchSource::PullRequest(42))
+            );
+        }
+
+        for path in [
+            "/rest/jira/1.0/projects/PROJ/repos/api/pull-requests/42/issues",
+            "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports",
+            "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports/sonar",
+            "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports/sonar/annotations",
+            "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/annotations",
+        ] {
+            assert_eq!(ok(Method::GET, path), (Action::RepoRead, BranchSource::None), "{path}");
+        }
+
+        for (method, path) in [
+            (Method::GET, reaction),
+            (
+                Method::PUT,
+                "/rest/comment-likes/latest/projects/PROJ/repos/api/commits/abc/comments/7/reactions/thumbsup",
+            ),
+            (
+                Method::PUT,
+                "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/x/comments/7/reactions/thumbsup",
+            ),
+            (
+                Method::PUT,
+                "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports/sonar",
+            ),
+            (
+                Method::POST,
+                "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports/sonar/annotations",
+            ),
+            (
+                Method::GET,
+                "/rest/jira/1.0/projects/PROJ/repos/api/pull-requests/x/issues",
+            ),
+            (
+                Method::GET,
+                "/rest/build-status/latest/projects/PROJ/repos/api/commits/abc123",
+            ),
+        ] {
+            assert_eq!(denied(method.clone(), path), Unsupported::Endpoint, "{method} {path}");
         }
     }
 
@@ -463,15 +596,10 @@ mod tests {
             (Method::PUT, format!("{REPO}/browse/README.md")),
             (Method::POST, format!("{REPO}/tags")),
             (Method::POST, format!("{REPO}/commits/abc123/comments")),
-            // Commits through comments, reactions and token management.
+            // Commits through comments, and token management.
             (
                 Method::POST,
                 format!("{REPO}/pull-requests/1/comments/2/apply-suggestion"),
-            ),
-            (
-                Method::PUT,
-                "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/1/comments/2/reactions/thumbsup"
-                    .to_owned(),
             ),
             (
                 Method::PUT,
@@ -487,6 +615,14 @@ mod tests {
             (Method::POST, format!("{REPO}/pull-requests/1/comments/2")),
             (Method::GET, format!("{REPO}/pull-requests/abc")),
             (Method::GET, format!("{REPO}/pull-requests/+1")),
+            (Method::GET, format!("{REPO}/pull-requests/.diff")),
+            (Method::GET, format!("{REPO}/pull-requests/1.txt")),
+            (Method::PUT, format!("{REPO}/pull-requests/1.diff")),
+            (Method::POST, format!("{REPO}/pull-requests/1/auto-merge")),
+            (Method::POST, format!("{REPO}/pull-requests/1/watch")),
+            (Method::PUT, format!("{REPO}/default-branch")),
+            (Method::PUT, format!("{REPO}/branches/default")),
+            (Method::DELETE, format!("{REPO}/commits/abc123/comments/5")),
             (Method::GET, format!("{REPO}/pull-requests/1/comments/x")),
             (Method::GET, format!("{REPO}/raw")),
             (Method::GET, format!("{REPO}/settings/pull-requests")),
