@@ -79,19 +79,19 @@
         margin: 0;
       }
 
-      /* Log out submits a form, but looks like the header links next to it. */
+      /* Log out submits a form, but looks like the header links next to it, in red because it ends the session. */
       .nav-form button.nav-link {
         padding: 0;
         border: 0;
         background: none;
         box-shadow: none;
-        color: var(--pico-secondary);
+        color: var(--fgatb-danger);
         font: inherit;
         cursor: pointer;
       }
 
       .nav-form button.nav-link:is(:hover, :focus-visible) {
-        color: var(--pico-secondary-hover);
+        color: var(--fgatb-danger-hover);
         text-decoration: underline;
       }
 
