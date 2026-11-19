@@ -243,7 +243,7 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 | `pr:decline` | `POST {repo}/pull-requests/{id}/decline` | `source` and `target` of the existing pull request |
 | `pr:reopen` | `POST {repo}/pull-requests/{id}/reopen` | `source` and `target` of the existing pull request |
 | `pr:delete` | `DELETE {repo}/pull-requests/{id}` | `source` and `target` of the existing pull request |
-| `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments`; `PUT`, `DELETE comment-likes/{version}/…/pull-requests/{id}/comments/{commentId}/reactions/{emoticon}`, since a reaction is the token's own lightweight comment | `source` and `target` of the existing pull request |
+| `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments`; `PUT`, `DELETE comment-likes/{version}/…/pull-requests/{id}/comments/{commentId}/reactions/{emoticon}`, and `POST {repo}/pull-requests/{id}/comments/{commentId}/reactions`, `PUT`, `DELETE …/reactions/{emoticon}`, which Bitbucket serves outside its published API description, since a reaction is the token's own lightweight comment | `source` and `target` of the existing pull request |
 | `pr_comment:update` | `PUT {repo}/pull-requests/{id}/comments/{commentId}`, `PUT …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `pr_comment:delete` | `DELETE {repo}/pull-requests/{id}/comments/{commentId}`, `DELETE …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `branch:push` | Git push, see [Git over HTTPS](#git-over-https) | `branch` from the pushed ref |

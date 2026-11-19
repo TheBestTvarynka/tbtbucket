@@ -679,6 +679,13 @@ mod tests {
             ),
             ("PUT", reaction.to_owned(), None),
             ("DELETE", reaction.to_owned(), None),
+            (
+                "POST",
+                format!("{pr}/comments/7/reactions"),
+                Some(json!({ "emoticon": "heart" })),
+            ),
+            ("PUT", format!("{pr}/comments/7/reactions/heart"), None),
+            ("DELETE", format!("{pr}/comments/7/reactions/heart"), None),
             ("DELETE", format!("{pr}/comments/7?version=1"), None),
             ("POST", format!("{pr}/decline?version=2"), None),
             ("DELETE", pr.clone(), Some(json!({ "version": 3 }))),
@@ -717,6 +724,11 @@ mod tests {
                 "PUT",
                 "/rest/comment-likes/latest/projects/PROJ/repos/api/pull-requests/3/comments/7/reactions/thumbsup"
                     .to_owned(),
+                "access token does not allow pr_comment:create",
+            ),
+            (
+                "PUT",
+                format!("{REPO}/pull-requests/3/comments/7/reactions/heart"),
                 "access token does not allow pr_comment:create",
             ),
             (

@@ -198,10 +198,19 @@ fn classify_pull_request(method: &Method, id: u64, tail: &[&str]) -> Option<(Act
 
         (["comments" | "blocker-comments"], _) if get => (Action::RepoRead, B::None),
         (["comments" | "blocker-comments"], &Method::POST) => (Action::PrCommentCreate, pull_request),
-        // Lists a comment's reactions. Not in the published API description, but served by Bitbucket and used by its UI.
-        (["comments", comment, "reactions"], _) if get => {
+        // A comment's reactions: not in the published API description, but served by Bitbucket and used by its UI.
+        // Like the `comment-likes` reactions, adding and removing the token's own reaction needs `pr_comment:create`.
+        (["comments", comment, "reactions"], _) => {
             pull_request_id(comment)?;
-            (Action::RepoRead, B::None)
+            match *method {
+                Method::GET => (Action::RepoRead, B::None),
+                Method::POST => (Action::PrCommentCreate, pull_request),
+                _ => return None,
+            }
+        }
+        (["comments", comment, "reactions", _], &Method::PUT | &Method::DELETE) => {
+            pull_request_id(comment)?;
+            (Action::PrCommentCreate, pull_request)
         }
         (["comments" | "blocker-comments", comment], _) => {
             comment.parse::<u64>().ok()?;
@@ -511,6 +520,24 @@ mod tests {
             ),
             (Method::POST, format!("{pr}/participants"), Action::PrUpdate, existing),
             (Method::DELETE, format!("{pr}/participants"), Action::PrUpdate, existing),
+            (
+                Method::POST,
+                format!("{pr}/comments/7/reactions"),
+                Action::PrCommentCreate,
+                existing,
+            ),
+            (
+                Method::PUT,
+                format!("{pr}/comments/7/reactions/heart"),
+                Action::PrCommentCreate,
+                existing,
+            ),
+            (
+                Method::DELETE,
+                format!("{pr}/comments/7/reactions/heart"),
+                Action::PrCommentCreate,
+                existing,
+            ),
             (Method::PUT, format!("{pr}/review"), Action::PrReview, existing),
             (Method::DELETE, format!("{pr}/review"), Action::PrReview, existing),
         ];
@@ -634,6 +661,15 @@ mod tests {
             (
                 Method::GET,
                 format!("{REPO}/pull-requests/1/comments/2/reactions/thumbsup"),
+            ),
+            (Method::DELETE, format!("{REPO}/pull-requests/1/comments/2/reactions")),
+            (
+                Method::PUT,
+                format!("{REPO}/pull-requests/1/comments/x/reactions/heart"),
+            ),
+            (
+                Method::PUT,
+                format!("{REPO}/pull-requests/1/blocker-comments/2/reactions/heart"),
             ),
             (Method::GET, format!("{REPO}/pull-requests/1/comments/x")),
             (Method::GET, format!("{REPO}/raw")),
