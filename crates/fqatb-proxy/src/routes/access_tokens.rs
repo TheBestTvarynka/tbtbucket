@@ -213,7 +213,8 @@ impl FormView {
             name: String::new(),
             expiry: DEFAULT_EXPIRY.to_owned(),
             expires_on: String::new(),
-            rules: vec![RuleView::empty()],
+            // Rule cards appear only once the admin adds one, so that the page stays short when only managing tokens.
+            rules: Vec::new(),
         }
     }
 
@@ -631,7 +632,9 @@ mod tests {
 
         let html = body_text(send(&app, with_cookie(Request::get("/webapp/access_tokens"), &cookie)).await).await;
         assert!(html.contains(r#"hx-post="/fgatbapi/access_tokens""#));
-        assert!(html.contains(&format!(r#"<option value="{read}">read</option>"#)));
+        // Rule cards only appear once the admin adds one.
+        assert!(!html.contains(r#"class="rule-card""#));
+        assert!(html.contains("Add a rule to choose what the token allows."));
 
         let response = send(
             &app,

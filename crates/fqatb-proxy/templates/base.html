@@ -79,6 +79,22 @@
         margin: 0;
       }
 
+      /* Log out submits a form, but looks like the header links next to it. */
+      .nav-form button.nav-link {
+        padding: 0;
+        border: 0;
+        background: none;
+        box-shadow: none;
+        color: var(--pico-secondary);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .nav-form button.nav-link:is(:hover, :focus-visible) {
+        color: var(--pico-secondary-hover);
+        text-decoration: underline;
+      }
+
       /* Fields and their submit button on one row, aligned on the bottom edge. */
       .inline-form {
         display: grid;
@@ -231,6 +247,16 @@
 
       .add-rule {
         margin-bottom: var(--pico-spacing);
+      }
+
+      .rules-hint {
+        margin-bottom: 0.5rem;
+        color: var(--pico-muted-color);
+        font-size: var(--fgatb-control-font-size);
+      }
+
+      .rule-cards:has(.rule-card) + .rules-hint {
+        display: none;
       }
 
       .issued-token {
