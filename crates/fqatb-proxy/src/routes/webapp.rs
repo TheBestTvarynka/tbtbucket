@@ -246,6 +246,7 @@ mod tests {
         let home = body_text(response).await;
         assert!(home.contains(r#"<a href="/webapp/bitbucket_tokens">/bitbucket_tokens</a>"#));
         assert!(home.contains(r#"action="/webapp/logout""#));
+        assert!(home.contains(">/sign-out</button>"));
 
         let response = send(&app, with_cookie(Request::post("/webapp/logout"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
