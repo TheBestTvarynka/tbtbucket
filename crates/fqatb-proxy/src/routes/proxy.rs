@@ -655,6 +655,7 @@ mod tests {
             format!("{REPO}/pull-requests/1.diff"),
             format!("{pr}/activities?start=0&limit=25"),
             format!("{pr}/comments/7"),
+            format!("{pr}/comments/7/reactions"),
             format!("{REPO}/commits?until=main"),
             "/rest/jira/latest/projects/PROJ/repos/api/pull-requests/1/issues".to_owned(),
             "/rest/insights/latest/projects/PROJ/repos/api/commits/abc123/reports".to_owned(),
@@ -688,8 +689,8 @@ mod tests {
         }
 
         let forwarded = fixture.forwarded();
-        assert_eq!(forwarded.len(), 6 + writes.len());
-        for (sent, (method, path, body)) in forwarded[6..].iter().zip(&writes) {
+        assert_eq!(forwarded.len(), 7 + writes.len());
+        for (sent, (method, path, body)) in forwarded[7..].iter().zip(&writes) {
             assert_eq!(
                 (sent.method.as_str(), sent.path_and_query.as_str()),
                 (*method, path.as_str())
@@ -700,7 +701,7 @@ mod tests {
             }
         }
         assert!(
-            forwarded[..6]
+            forwarded[..7]
                 .iter()
                 .all(|sent| sent.headers.get(header::AUTHORIZATION).unwrap() == "Bearer ATBB-read")
         );
@@ -734,7 +735,7 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
             assert!(error_message(&body).starts_with(message), "{method} {path}: {body}");
         }
-        assert_eq!(fixture.forwarded().len(), 6 + writes.len());
+        assert_eq!(fixture.forwarded().len(), 7 + writes.len());
     }
 
     #[tokio::test]

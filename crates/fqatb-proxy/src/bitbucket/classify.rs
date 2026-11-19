@@ -198,6 +198,11 @@ fn classify_pull_request(method: &Method, id: u64, tail: &[&str]) -> Option<(Act
 
         (["comments" | "blocker-comments"], _) if get => (Action::RepoRead, B::None),
         (["comments" | "blocker-comments"], &Method::POST) => (Action::PrCommentCreate, pull_request),
+        // Lists a comment's reactions. Not in the published API description, but served by Bitbucket and used by its UI.
+        (["comments", comment, "reactions"], _) if get => {
+            pull_request_id(comment)?;
+            (Action::RepoRead, B::None)
+        }
         (["comments" | "blocker-comments", comment], _) => {
             comment.parse::<u64>().ok()?;
             match *method {
@@ -340,6 +345,7 @@ mod tests {
             "/pull-requests/42/participants",
             "/pull-requests/42/review",
             "/pull-requests/42/auto-merge",
+            "/pull-requests/42/comments/182860/reactions",
         ] {
             assert_eq!(
                 ok(Method::GET, &format!("{REPO}{tail}")),
@@ -623,6 +629,12 @@ mod tests {
             (Method::PUT, format!("{REPO}/default-branch")),
             (Method::PUT, format!("{REPO}/branches/default")),
             (Method::DELETE, format!("{REPO}/commits/abc123/comments/5")),
+            (Method::PUT, format!("{REPO}/pull-requests/1/comments/2/reactions")),
+            (Method::GET, format!("{REPO}/pull-requests/1/comments/x/reactions")),
+            (
+                Method::GET,
+                format!("{REPO}/pull-requests/1/comments/2/reactions/thumbsup"),
+            ),
             (Method::GET, format!("{REPO}/pull-requests/1/comments/x")),
             (Method::GET, format!("{REPO}/raw")),
             (Method::GET, format!("{REPO}/settings/pull-requests")),
