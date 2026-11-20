@@ -59,3 +59,12 @@ Requests that the token does not allow, or that the proxy does not support yet, 
 Removing a Bitbucket token also removes every access token that uses it.
 
 See [`docs/access-model.md`](docs/access-model.md) for the token format, the rule format and the supported endpoints.
+
+## Management API
+
+Scripts can manage Bitbucket tokens and access tokens without the admin panel, through the JSON API under `/fgatbapi/v1/`.
+
+1. Issue a management token at `/webapp/management_tokens`; it is shown once, right after it is issued.
+2. Send it as `Authorization: Bearer fgatbm_…` to list, add and remove Bitbucket tokens at `/fgatbapi/v1/bitbucket_tokens` and access tokens at `/fgatbapi/v1/access_tokens`.
+
+See [`docs/management-api.md`](docs/management-api.md) for every endpoint, with examples.
