@@ -588,6 +588,7 @@ mod tests {
         let html = body_text(send(&app, with_cookie(Request::get("/webapp/access_tokens"), &cookie)).await).await;
         assert!(html.contains(r#"hx-post="/fgatbapi/access_tokens""#));
         assert!(html.contains(">Add access token</button>"));
+        assert!(html.contains(r#"<p class="page-hint">Access tokens are what clients use"#));
         assert!(!form_is_open(&html), "the form opens with Add access token");
         // Rule cards only appear once the admin adds one.
         assert!(!html.contains(r#"class="rule-card""#));

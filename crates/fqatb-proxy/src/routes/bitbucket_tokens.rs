@@ -242,6 +242,9 @@ mod tests {
         assert!(html.contains(r#"hx-post="/fgatbapi/bitbucket_tokens""#));
         assert!(html.contains("No tokens found"));
         assert!(html.contains("htmx.org@"));
+        assert!(html.contains(
+            r#"<p class="page-hint"><a href="https://confluence.atlassian.com/bitbucketserver102/http-access-tokens-1791787433.html" target="_blank" rel="noopener noreferrer">Bitbucket HTTP access tokens</a>"#
+        ));
     }
 
     #[tokio::test]

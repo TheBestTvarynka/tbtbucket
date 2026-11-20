@@ -6,6 +6,7 @@
 {% include "partials/header.html" %}
 <main class="container app-page">
   <h2>Access tokens</h2>
+  <p class="page-hint">Access tokens are what clients use in place of a Bitbucket token. Their rules decide which requests the proxy forwards, and with which Bitbucket token.</p>
   {% include "partials/access_tokens_section.html" %}
 </main>
 {% endblock %}
