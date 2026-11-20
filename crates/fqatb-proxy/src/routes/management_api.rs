@@ -131,7 +131,7 @@ struct CreatedAccessToken {
     id: Uuid,
     name: String,
     /// The full token: this response is the only time it is available.
-    token: String,
+    token: Secret<String>,
     expires_at: String,
 }
 
@@ -308,7 +308,7 @@ async fn create_access_token(
             let created = CreatedAccessToken {
                 id: issued.id,
                 name,
-                token: issued.token.as_ref().clone(),
+                token: issued.token,
                 expires_at: timestamp(expires_at),
             };
             (StatusCode::CREATED, Json(created)).into_response()
