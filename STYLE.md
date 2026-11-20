@@ -59,7 +59,8 @@ Error: Invalid server license., Caused by Invalid X.509 certificate., Caused by 
 
 ### Error types
 
-Library crates expose typed errors (for example, using `thiserror`), not `anyhow`.
+Crates expose typed errors (for example, using `thiserror`).
+Avoid using `anyhow`.
 Avoid having an umbrella error type (one error type for the whole library).
 For module-specific errors create a module-level error type and allow the root error type value to be created from it.
 
