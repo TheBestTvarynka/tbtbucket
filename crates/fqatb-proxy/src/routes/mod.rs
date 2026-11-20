@@ -4,6 +4,7 @@ mod access_tokens;
 mod auth;
 mod bitbucket_tokens;
 mod health;
+mod management_tokens;
 mod proxy;
 #[cfg(test)]
 mod testing;
@@ -27,6 +28,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(webapp::router())
         .merge(bitbucket_tokens::router())
         .merge(access_tokens::router())
+        .merge(management_tokens::router())
         .fallback(proxy::proxy)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -38,7 +38,7 @@ Without them the proxy serves plain HTTP and warns about it on start-up.
 Use that only for local development: clients would send access tokens and the admin password in clear text.
 Setting only one of the two variables is an error.
 
-The admin panel is served under `/webapp/`.
+The admin panel is served under `/webapp/`; its home page is `/webapp/management_tokens`.
 On first start-up, open `/webapp/signup` to set the admin password, then log in with it at `/webapp/login`.
 Until the password is set, anyone who can reach the panel can claim it, so keep the proxy private until then.
 Its actions are served under `/fgatbapi/`, for example Bitbucket token management at `/webapp/bitbucket_tokens`.

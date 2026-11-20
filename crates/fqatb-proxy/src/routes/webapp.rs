@@ -21,18 +21,22 @@ use crate::{Error, Result};
 ///
 /// Everything outside of it is left for proxied requests.
 pub(super) const BASE_PATH: &str = "/webapp";
-pub(super) const HOME_PATH: &str = "/webapp/";
+/// The panel's root, which only leads to [`HOME_PATH`].
+const ROOT_PATH: &str = "/webapp/";
+/// The home page: where logging in and the panel's root lead.
+pub(super) const HOME_PATH: &str = super::management_tokens::PAGE_PATH;
 pub(super) const LOGIN_PATH: &str = "/webapp/login";
 const LOGOUT_PATH: &str = "/webapp/logout";
 const SIGNUP_PATH: &str = "/webapp/signup";
 
 /// Routes of the admin panel.
 ///
-/// The routes carry the full path rather than being nested under [`BASE_PATH`], because a nested `/` route does not match the trailing slash of [`HOME_PATH`].
+/// The routes carry the full path rather than being nested under [`BASE_PATH`], because a nested `/` route does not match the trailing slash of [`ROOT_PATH`].
 pub(super) fn router() -> Router<AppState> {
+    // Not permanent, so that the home page can move without browsers remembering the old one.
     Router::new()
-        .route(BASE_PATH, get(|| async { Redirect::permanent(HOME_PATH) }))
-        .route(HOME_PATH, get(home))
+        .route(BASE_PATH, get(|| async { Redirect::to(HOME_PATH) }))
+        .route(ROOT_PATH, get(|| async { Redirect::to(HOME_PATH) }))
         .route(SIGNUP_PATH, get(signup_page).post(signup))
         .route(LOGIN_PATH, get(login_page).post(login))
         .route(LOGOUT_PATH, post(logout))
@@ -60,10 +64,6 @@ struct LoginPage {
     error: Option<&'static str>,
 }
 
-#[derive(Template, WebTemplate)]
-#[template(path = "home.html")]
-struct HomePage;
-
 #[derive(Deserialize)]
 struct SignupForm {
     password: Secret<String>,
@@ -73,10 +73,6 @@ struct SignupForm {
 #[derive(Deserialize)]
 struct LoginForm {
     password: Secret<String>,
-}
-
-async fn home(_session: AuthSession) -> HomePage {
-    HomePage
 }
 
 /// Shows the sign-up form until the admin is initialized, and redirects to the login page afterwards.
@@ -180,23 +176,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn base_path_redirects_to_home() {
+    async fn panel_root_leads_to_management_tokens() {
         let (app, _state) = setup().await;
 
-        let response = send(&app, get("/webapp")).await;
-
-        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
-        assert_eq!(location(&response), "/webapp/");
-    }
-
-    #[tokio::test]
-    async fn home_redirects_to_login_without_session() {
-        let (app, _state) = setup().await;
-
-        let response = send(&app, get("/webapp/")).await;
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(location(&response), "/webapp/login");
+        for uri in ["/webapp", "/webapp/"] {
+            let response = send(&app, get(uri)).await;
+            assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
+            assert_eq!(location(&response), "/webapp/management_tokens", "{uri}");
+        }
     }
 
     #[tokio::test]
@@ -237,13 +224,15 @@ mod tests {
 
         let response = send(&app, login_request(PASSWORD)).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(location(&response), "/webapp/");
+        assert_eq!(location(&response), "/webapp/management_tokens");
         let cookie = session_cookie(&response);
         assert_eq!(state.db.session_count().await, 1);
 
-        let response = send(&app, with_cookie(Request::get("/webapp/"), &cookie)).await;
+        let response = send(&app, with_cookie(Request::get("/webapp/management_tokens"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let home = body_text(response).await;
+        assert!(home.contains(r#"<a href="/webapp/management_tokens">/management_tokens</a>"#));
+        assert!(!home.contains("FGAT Bitbucket</strong>"));
         assert!(home.contains(r#"<a href="/webapp/bitbucket_tokens">/bitbucket_tokens</a>"#));
         assert!(home.contains(r#"action="/webapp/logout""#));
         assert!(home.contains(">/sign-out</button>"));
@@ -253,7 +242,7 @@ mod tests {
         assert_eq!(location(&response), "/webapp/login");
         assert_eq!(state.db.session_count().await, 0);
 
-        let response = send(&app, with_cookie(Request::get("/webapp/"), &cookie)).await;
+        let response = send(&app, with_cookie(Request::get("/webapp/management_tokens"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&response), "/webapp/login");
     }
@@ -262,7 +251,7 @@ mod tests {
     async fn forged_cookie_is_rejected() {
         let (app, _state) = setup().await;
 
-        let response = send(&app, with_cookie(Request::get("/webapp/"), "AAAA")).await;
+        let response = send(&app, with_cookie(Request::get("/webapp/management_tokens"), "AAAA")).await;
 
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(location(&response), "/webapp/login");
@@ -312,7 +301,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         let cookie = session_cookie(&response);
 
-        let response = send(&app, with_cookie(Request::get("/webapp/"), &cookie)).await;
+        let response = send(&app, with_cookie(Request::get("/webapp/management_tokens"), &cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 
