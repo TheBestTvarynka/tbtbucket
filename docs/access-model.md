@@ -84,7 +84,7 @@ Identifiers in the link table are stored as is, like every other identifier.
 ### Lifetime
 
 Every access token expires.
-The admin panel offers presets of 7, 30 and 90 days and a custom date.
+The admin panel offers lifetimes of 1, 7, 30 and 90 days.
 Expired tokens are rejected and stay listed as expired until removed.
 
 ### Removing a Bitbucket token

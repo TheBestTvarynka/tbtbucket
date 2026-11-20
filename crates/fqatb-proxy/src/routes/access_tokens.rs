@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{delete, get, post};
 use axum::{Form, Router};
-use time::{Date, Duration, Month, OffsetDateTime, Time};
+use time::{Duration, OffsetDateTime};
 use tracing::info;
 use uuid::Uuid;
 
@@ -28,8 +28,8 @@ const API_PATH: &str = "/fgatbapi/access_tokens";
 const API_TOKEN_PATH: &str = "/fgatbapi/access_tokens/{id}";
 const API_RULE_PATH: &str = "/fgatbapi/access_tokens/rules";
 
-/// Expiration presets offered in the form, in days.
-const EXPIRY_PRESETS: [u16; 3] = [7, 30, 90];
+/// Lifetimes offered in the form, in days; no other lifetime is accepted.
+const EXPIRY_PRESETS: [u16; 4] = [1, 7, 30, 90];
 const DEFAULT_EXPIRY: &str = "30";
 
 pub(super) fn router() -> Router<AppState> {
@@ -200,10 +200,8 @@ struct IssuedView {
 
 struct FormView {
     name: String,
-    /// One of [`EXPIRY_PRESETS`] or `custom`.
+    /// One of [`EXPIRY_PRESETS`].
     expiry: String,
-    /// `YYYY-MM-DD`, used when [`FormView::expiry`] is `custom`.
-    expires_on: String,
     rules: Vec<RuleView>,
 }
 
@@ -212,7 +210,6 @@ impl FormView {
         Self {
             name: String::new(),
             expiry: DEFAULT_EXPIRY.to_owned(),
-            expires_on: String::new(),
             // Rule cards appear only once the admin adds one, so that the page stays short when only managing tokens.
             rules: Vec::new(),
         }
@@ -221,12 +218,14 @@ impl FormView {
     fn expiry_options(&self) -> Vec<ExpiryOption> {
         EXPIRY_PRESETS
             .iter()
-            .map(|days| (days.to_string(), format!("{days} days")))
-            .chain([("custom".to_owned(), "Custom date".to_owned())])
-            .map(|(value, label)| ExpiryOption {
-                selected: self.expiry == value,
-                value,
-                label,
+            .map(|days| ExpiryOption {
+                value: days.to_string(),
+                label: if *days == 1 {
+                    "1 day".to_owned()
+                } else {
+                    format!("{days} days")
+                },
+                selected: self.expiry == days.to_string(),
             })
             .collect()
     }
@@ -415,7 +414,6 @@ fn parse_form(fields: Vec<(String, String)>) -> FormView {
     let mut form = FormView {
         name: String::new(),
         expiry: String::new(),
-        expires_on: String::new(),
         rules: Vec::new(),
     };
 
@@ -423,7 +421,6 @@ fn parse_form(fields: Vec<(String, String)>) -> FormView {
         match key.as_str() {
             "name" => form.name = value,
             "expiry" => form.expiry = value,
-            "expires_on" => form.expires_on = value,
             _ => {
                 let Some((rule_key, field)) = key.strip_prefix("rule.").and_then(|rest| rest.split_once('.')) else {
                     continue;
@@ -462,42 +459,13 @@ fn parse_form(fields: Vec<(String, String)>) -> FormView {
     form
 }
 
-/// Turns the selected expiration into a timestamp.
-///
-/// A custom date means the token is valid through the end of that day, in UTC.
+/// Turns the selected lifetime into a timestamp.
 fn expires_at(form: &FormView, now: OffsetDateTime) -> std::result::Result<OffsetDateTime, String> {
-    if let Some(days) = EXPIRY_PRESETS.iter().find(|days| days.to_string() == form.expiry) {
-        return Ok(now + Duration::days(i64::from(*days)));
-    }
-
-    if form.expiry != "custom" {
-        return Err("Choose when the token expires".to_owned());
-    }
-
-    let date = parse_date(form.expires_on.trim()).ok_or_else(|| "Enter the expiration date".to_owned())?;
-    let expires_at = date
-        .next_day()
-        .ok_or_else(|| "The expiration date is too far in the future".to_owned())?
-        .with_time(Time::MIDNIGHT)
-        .assume_utc();
-
-    if !(now < expires_at) {
-        return Err("The expiration date must be in the future".to_owned());
-    }
-
-    return Ok(expires_at);
-
-    fn parse_date(text: &str) -> Option<Date> {
-        let mut parts = text.splitn(3, '-').map(str::parse::<u16>);
-        let (year, month, day) = (parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?);
-
-        Date::from_calendar_date(
-            i32::from(year),
-            Month::try_from(u8::try_from(month).ok()?).ok()?,
-            u8::try_from(day).ok()?,
-        )
-        .ok()
-    }
+    EXPIRY_PRESETS
+        .iter()
+        .find(|days| days.to_string() == form.expiry)
+        .map(|days| now + Duration::days(i64::from(*days)))
+        .ok_or_else(|| "Choose when the token expires".to_owned())
 }
 
 /// Builds and validates the policy, with messages that point at the rule card to fix.
@@ -635,6 +603,20 @@ mod tests {
         // Rule cards only appear once the admin adds one.
         assert!(!html.contains(r#"class="rule-card""#));
         assert!(html.contains("Add a rule to choose what the token allows."));
+        for option in [
+            r#"<option value="1">1 day</option>"#,
+            r#"<option value="7">7 days</option>"#,
+            r#"<option value="30" selected>30 days</option>"#,
+            r#"<option value="90">90 days</option>"#,
+        ] {
+            assert!(html.contains(option), "{option}");
+        }
+        assert_eq!(
+            html.matches("<option value=").count(),
+            4,
+            "only the presets are offered"
+        );
+        assert!(!html.contains("expires_on"));
 
         let response = send(
             &app,
@@ -643,7 +625,6 @@ mod tests {
                 &[
                     ("name", "release-bot"),
                     ("expiry", "30"),
-                    ("expires_on", ""),
                     ("rule.a1.bitbucket_token", &read),
                     ("rule.a1.actions", "repo:read"),
                     ("rule.a1.project", "PROJ"),
@@ -703,14 +684,8 @@ mod tests {
                 base(&[("rule.k1.source", "feature/**")]),
                 "Rule 1: source branches only limit pull request and comment actions",
             ),
-            (
-                base(&[("expiry", "custom"), ("expires_on", "2001-01-01")]),
-                "The expiration date must be in the future",
-            ),
-            (
-                base(&[("expiry", "custom"), ("expires_on", "soon")]),
-                "Enter the expiration date",
-            ),
+            (base(&[("expiry", "custom")]), "Choose when the token expires"),
+            (base(&[("expiry", "14")]), "Choose when the token expires"),
             (vec![("name", "ci"), ("expiry", "7")], "Add at least one rule"),
         ];
 
@@ -732,6 +707,44 @@ mod tests {
         }
 
         assert!(state.access_token_service.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_preset_sets_the_lifetime() {
+        let (app, state, cookie) = setup_logged_in().await;
+        let read = add_bitbucket_token(&state, "read").await.to_string();
+
+        for days in ["1", "7", "30", "90"] {
+            let before = time::OffsetDateTime::now_utc();
+            let name = format!("token-{days}");
+            let fields = [
+                ("name", name.as_str()),
+                ("expiry", days),
+                ("rule.x.bitbucket_token", read.as_str()),
+                ("rule.x.actions", "repo:read"),
+                ("rule.x.project", "PROJ"),
+                ("rule.x.repository", "api"),
+            ];
+            assert_eq!(
+                send(&app, create_request(&cookie, &fields)).await.status(),
+                StatusCode::OK
+            );
+
+            let token = state
+                .access_token_service
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|token| token.name == name)
+                .unwrap();
+            let lifetime = token.expires_at - before;
+            let expected = time::Duration::days(days.parse().unwrap());
+            assert!(
+                expected - time::Duration::minutes(1) < lifetime && lifetime < expected + time::Duration::minutes(1),
+                "{days}: {lifetime}"
+            );
+        }
     }
 
     #[tokio::test]
