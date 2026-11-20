@@ -44,12 +44,19 @@ struct ActionGroup {
     actions: &'static [ActionOption],
     /// Whether the row carries the branch pattern input that limits its actions.
     branch_pattern: bool,
+    /// Shown in a tooltip on a help icon next to the checkboxes.
+    help: Option<&'static str>,
+    /// Asked before unchecking one of the group's actions, for actions that a token is rarely useful without.
+    uncheck_confirmation: Option<&'static str>,
 }
 
 struct ActionOption {
     name: &'static str,
     label: &'static str,
 }
+
+/// The action checked on a new rule card.
+const DEFAULT_ACTION: &str = "repo:read";
 
 /// Actions offered in the form.
 ///
@@ -63,6 +70,15 @@ const ACTION_GROUPS: &[ActionGroup] = &[
             label: "read",
         }],
         branch_pattern: false,
+        help: Some(
+            "Most clients read before they change anything: they load a pull request, its diff and its comments \
+             before they update, review, comment on or merge it. Reading covers all of that, and branch patterns \
+             never limit it. Without it, those requests are denied, so the token is rarely useful.",
+        ),
+        uncheck_confirmation: Some(
+            "Without Repository: read, the client cannot read anything in this repository: commits, branches, \
+             pull requests, their diffs and comments. Those requests will be denied.\n\nUncheck it anyway?",
+        ),
     },
     ActionGroup {
         label: "Branches",
@@ -78,6 +94,8 @@ const ACTION_GROUPS: &[ActionGroup] = &[
             },
         ],
         branch_pattern: true,
+        help: None,
+        uncheck_confirmation: None,
     },
     ActionGroup {
         label: "Pull requests",
@@ -113,6 +131,8 @@ const ACTION_GROUPS: &[ActionGroup] = &[
             },
         ],
         branch_pattern: false,
+        help: None,
+        uncheck_confirmation: None,
     },
     ActionGroup {
         label: "PR comments",
@@ -132,6 +152,8 @@ const ACTION_GROUPS: &[ActionGroup] = &[
             },
         ],
         branch_pattern: false,
+        help: None,
+        uncheck_confirmation: None,
     },
 ];
 
@@ -244,6 +266,14 @@ impl RuleView {
         }
     }
 
+    /// A new rule card, with reading checked: few clients work without it.
+    fn new_card() -> Self {
+        Self {
+            actions: vec![DEFAULT_ACTION.to_owned()],
+            ..Self::empty()
+        }
+    }
+
     fn has_action(&self, name: &str) -> bool {
         self.actions.iter().any(|action| action == name)
     }
@@ -285,7 +315,7 @@ async fn page(_auth: AuthSession, State(state): State<AppState>) -> Result<Acces
 
 async fn new_rule(_auth: AuthSession, State(state): State<AppState>) -> Result<RuleCard> {
     Ok(RuleCard {
-        rule: RuleView::empty(),
+        rule: RuleView::new_card(),
         bitbucket_tokens: bitbucket_token_options(&state).await?,
         action_groups: ACTION_GROUPS,
     })
@@ -541,6 +571,18 @@ mod tests {
         &html[start..start + end]
     }
 
+    /// Whether the first checkbox for `action` carries the `checked` attribute.
+    ///
+    /// The attribute is matched as a whole word, since scripts in the same tag mention `this.checked`.
+    fn is_checked(html: &str, action: &str) -> bool {
+        let value = format!(r#"value="{action}""#);
+        let start = html[..html.find(&value).expect("the checkbox is rendered")]
+            .rfind("<input")
+            .unwrap();
+        let end = start + html[start..].find('>').unwrap();
+        html[start..end].split_whitespace().any(|word| word == "checked")
+    }
+
     /// Whether the creation form is shown, and the button that opens it hidden.
     fn form_is_open(html: &str) -> bool {
         let tag = |start: &str| {
@@ -694,7 +736,7 @@ mod tests {
             assert!(!html.contains("fgatb_"));
             if fields.iter().any(|(key, _)| key.starts_with("rule.")) {
                 assert!(html.contains(r#"name="rule.k1.project" value="PROJ""#), "{message}");
-                assert!(html.contains(r#"value="repo:read" checked"#), "{message}");
+                assert!(is_checked(&html, "repo:read"), "{message}");
             }
         }
 
@@ -874,6 +916,63 @@ mod tests {
             policy["rules"][0]["branches"],
             serde_json::json!({ "source": ["worktree/*"], "target": ["master", "worktree-*"] })
         );
+    }
+
+    #[tokio::test]
+    async fn new_rule_card_reads_by_default_and_explains_why() {
+        let (app, state, cookie) = setup_logged_in().await;
+        add_bitbucket_token(&state, "read").await;
+
+        let card = body_text(
+            send(
+                &app,
+                with_cookie(Request::post("/fgatbapi/access_tokens/rules"), &cookie),
+            )
+            .await,
+        )
+        .await;
+
+        assert!(is_checked(&card, "repo:read"));
+        for action in ["branch:create", "pr:create", "pr_comment:create"] {
+            assert!(!is_checked(&card, action), "{action}");
+        }
+
+        // Unchecking reading asks first, and only reading does.
+        assert_eq!(card.matches("data-uncheck-confirmation=").count(), 1);
+        assert!(
+            card.contains(r#"data-uncheck-confirmation="Without Repository: read, the client cannot read anything"#)
+        );
+        assert!(card.contains("Uncheck it anyway?"));
+
+        assert_eq!(card.matches(r#"class="help-icon""#).count(), 1);
+        assert!(card.contains(r#"data-tooltip="Most clients read before they change anything"#));
+    }
+
+    /// The default only applies to new cards: a rule submitted without reading comes back without it.
+    #[tokio::test]
+    async fn rejected_rules_keep_reading_unchecked() {
+        let (app, state, cookie) = setup_logged_in().await;
+        add_bitbucket_token(&state, "read").await;
+
+        let response = send(
+            &app,
+            create_request(
+                &cookie,
+                &[
+                    ("name", "ci"),
+                    ("expiry", "7"),
+                    ("rule.k1.project", "PROJ"),
+                    ("rule.k1.repository", "api"),
+                    ("rule.k1.actions", "pr:create"),
+                ],
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(response).await;
+        assert!(!is_checked(&html, "repo:read"));
+        assert!(is_checked(&html, "pr:create"));
     }
 
     #[tokio::test]

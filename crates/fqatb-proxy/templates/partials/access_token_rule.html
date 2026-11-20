@@ -26,8 +26,16 @@
       <span class="action-group-label">{{ group.label }}</span>
       <div class="action-group-options">
       {% for action in group.actions %}
-      <label><input type="checkbox" name="rule.{{ rule.key }}.actions" value="{{ action.name }}"{% if rule.has_action(action.name) %} checked{% endif %}> {{ action.label }}</label>
+      <label><input
+        type="checkbox"
+        name="rule.{{ rule.key }}.actions"
+        value="{{ action.name }}"
+        {% if rule.has_action(action.name) %}checked{% endif %}
+        {% if let Some(confirmation) = group.uncheck_confirmation %}data-uncheck-confirmation="{{ confirmation }}"
+        hx-on:change="if (!this.checked && !confirm(this.dataset.uncheckConfirmation)) this.checked = true"{% endif %}
+      > {{ action.label }}</label>
       {% endfor %}
+      {% if let Some(help) = group.help %}<span class="help-icon" tabindex="0" role="note" aria-label="{{ help }}" data-tooltip="{{ help }}" data-placement="right">?</span>{% endif %}
       {% if let Some(note) = group.note %}<span class="action-group-note">{{ note }}</span>{% endif %}
       {% if group.branch_pattern %}
       <input

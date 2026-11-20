@@ -234,6 +234,41 @@
         margin-inline-end: 0.125rem;
       }
 
+      /* A round "?" that explains its group in Pico's tooltip, wrapped to a readable width. */
+      .help-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.125rem;
+        height: 1.125rem;
+        border: 1px solid var(--pico-muted-color);
+        border-radius: 50%;
+        color: var(--pico-muted-color);
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1;
+        cursor: help;
+      }
+
+      .help-icon:hover,
+      .help-icon:focus-visible {
+        border-color: var(--pico-primary);
+        color: var(--pico-primary);
+      }
+
+      .help-icon[data-tooltip] {
+        border-bottom-style: solid;
+      }
+
+      .help-icon[data-tooltip]::before {
+        width: max-content;
+        max-width: 22rem;
+        white-space: normal;
+        text-align: left;
+        font-weight: normal;
+        line-height: 1.4;
+      }
+
       .action-group-note {
         color: var(--pico-muted-color);
         font-size: var(--fgatb-control-font-size);
