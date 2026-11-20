@@ -54,6 +54,10 @@ It is marked `Secure`, so browsers only keep it over HTTPS, or over plain HTTP w
    The token is shown once, right after it is issued.
 3. Point the Bitbucket client at the proxy instead of the Bitbucket server, and give it the access token where it would take a Bitbucket HTTP access token, either as `Authorization: Bearer fgatb_…` or as the password of Basic authentication.
 
+Git works the same way: use the proxy in the clone URL, such as `https://proxy.example.com/scm/PROJ/repo.git`, and give the access token as the password when Git asks.
+Cloning and fetching need Repository: read; pushing to branches needs Allow Git together with create and delete.
+For CI, `git -c http.extraHeader="Authorization: Bearer fgatb_…" clone …` passes the token without a prompt.
+
 Everything outside `/webapp/`, `/fgatbapi/` and `/health` is the Bitbucket-compatible API.
 Requests that the token does not allow, or that the proxy does not support yet, are denied with Bitbucket's error format.
 Removing a Bitbucket token also removes every access token that uses it.

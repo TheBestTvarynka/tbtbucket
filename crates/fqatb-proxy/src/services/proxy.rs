@@ -12,7 +12,7 @@ use crate::bitbucket::classify::{BranchSource, Classified};
 use crate::bitbucket::client::BitbucketClient;
 use crate::bitbucket::refs::{PullRequestBranches, PullRequestRefs, branch_name};
 use crate::db::{AccessToken, BitbucketTokenDb};
-use crate::policy::{Policy, Request};
+use crate::policy::{Policy, Request, Rule};
 
 /// The outcome of checking a request against an access token's policy.
 pub(crate) enum Decision {
@@ -141,6 +141,15 @@ impl<D: BitbucketTokenDb> ProxyService<D> {
         }
 
         let (rule, bitbucket_token_id) = allowed_by.expect("there is at least one check");
+        self.allow(rule, bitbucket_token_id).await
+    }
+
+    /// Allows a request that the rule at index `rule` matched, with that rule's Bitbucket token.
+    pub(crate) async fn allow_with_rule(&self, rule: usize, matched: &Rule) -> Result<Decision> {
+        self.allow(rule, matched.bitbucket_token()).await
+    }
+
+    async fn allow(&self, rule: usize, bitbucket_token_id: Uuid) -> Result<Decision> {
         let Some(bitbucket_token) = self.db.bitbucket_token(bitbucket_token_id).await? else {
             return Ok(Decision::Deny(
                 "the Bitbucket token of the matching rule no longer exists".to_owned(),

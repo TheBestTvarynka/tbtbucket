@@ -374,7 +374,6 @@ Git LFS, Git over SSH, `git archive --remote` and personal repositories (`/scm/~
 - Personal repositories (`/projects/~{userSlug}/…`, `/scm/~{userSlug}/…`).
   They are meant to be allowed only by rules that name the `~{userSlug}` project explicitly, never through a `*` project glob.
   Until then they are denied, and project patterns starting with `~` are rejected when a policy is saved.
-- Git over HTTPS.
 - Pull requests from forks.
 - Caching pull request lookups.
   Every request on an existing pull request fetches it from Bitbucket first.

@@ -13,7 +13,7 @@ use secret::Secret;
 use tracing::{debug, error, warn};
 
 use super::json_error;
-use crate::bitbucket::classify::{BranchSource, classify};
+use crate::bitbucket::classify::{BranchSource, Unsupported, classify};
 use crate::bitbucket::client::strip_response_headers;
 use crate::error::report;
 use crate::services::Decision;
@@ -47,6 +47,7 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
 
     let classified = match classify(request.method(), path) {
         Ok(classified) => classified,
+        Err(Unsupported::Git) => return super::git::git(&state, &token, request).await,
         Err(unsupported) => {
             warn!(access_token_id = %token.id, method = %request.method(), path, reason = %unsupported, "Denied unsupported request");
             return json_error(StatusCode::FORBIDDEN, &unsupported.to_string());
@@ -121,6 +122,11 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
         }
     };
 
+    upstream_response(upstream)
+}
+
+/// Passes Bitbucket's response on to the client, streaming its body, without its cookies and hop-by-hop headers.
+pub(super) fn upstream_response(upstream: reqwest::Response) -> Response {
     let mut response = Response::builder().status(upstream.status());
     let mut headers = upstream.headers().clone();
     strip_response_headers(&mut headers);
@@ -163,7 +169,7 @@ fn unauthorized(message: &str) -> Response {
     response
 }
 
-fn internal_error(error: &crate::Error) -> Response {
+pub(super) fn internal_error(error: &crate::Error) -> Response {
     error!(error = report(error), "Request failed");
     json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
 }
@@ -435,11 +441,6 @@ mod tests {
                 "GET",
                 "/rest/api/latest/dashboard/pull-requests".to_owned(),
                 "endpoint is not supported",
-            ),
-            (
-                "GET",
-                "/scm/proj/api.git/info/refs".to_owned(),
-                "Git over HTTPS is not supported yet",
             ),
             ("GET", format!("{REPO}/../web"), "path is malformed"),
             (
@@ -835,5 +836,261 @@ mod tests {
         }
 
         assert!(fixture.received().is_empty());
+    }
+
+    const GIT_REPO: &str = "/scm/PROJ/api.git";
+    const OLD: &str = "1111111111111111111111111111111111111111";
+    const NEW: &str = "2222222222222222222222222222222222222222";
+    const ZERO: &str = "0000000000000000000000000000000000000000";
+
+    /// A Git request with the token as the Basic password, as Git sends it; the body arrives in `chunks`.
+    fn git_request(method: &str, uri: &str, token: &str, chunks: Vec<Vec<u8>>) -> Request<Body> {
+        let basic = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("git:{token}"));
+        let stream = futures_util::stream::iter(chunks.into_iter().map(Ok::<_, std::io::Error>));
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Basic {basic}"))
+            .header("x-client", "1")
+            .body(Body::from_stream(stream))
+            .unwrap()
+    }
+
+    fn pkt(line: &str) -> Vec<u8> {
+        let mut packet = format!("{:04x}", line.len() + 4).into_bytes();
+        packet.extend_from_slice(line.as_bytes());
+        packet
+    }
+
+    /// The body of a push: the commands, a flush packet, then `pack`.
+    fn push_body(commands: &[String], pack: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (idx, command) in commands.iter().enumerate() {
+            let line = if idx == 0 {
+                format!("{command}\0report-status side-band-64k agent=git/2.56.0\n")
+            } else {
+                format!("{command}\n")
+            };
+            body.extend(pkt(&line));
+        }
+        body.extend(b"0000");
+        body.extend_from_slice(pack);
+        body
+    }
+
+    #[tokio::test]
+    async fn git_fetches_need_repo_read() {
+        let fixture = fixture().await;
+        let reader = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" }]))
+            .await;
+        let pusher = fixture
+            .issue(json!([{ "bitbucket_token": fixture.write_token, "actions": ["branch:create", "branch:git"], "project": "PROJ", "repository": "api" }]))
+            .await;
+
+        let advertisement = format!("{GIT_REPO}/info/refs?service=git-upload-pack");
+        let (status, _, _) = fixture.send(git_request("GET", &advertisement, &reader, vec![])).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let wants = b"0032want 2222222222222222222222222222222222222222\n00000009done\n".to_vec();
+        let (status, _, _) = fixture
+            .send(git_request(
+                "POST",
+                "/scm/proj/api/git-upload-pack",
+                &reader,
+                vec![wants.clone()],
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let forwarded = fixture.forwarded();
+        assert_eq!(forwarded[0].path_and_query, advertisement);
+        assert_eq!(forwarded[1].body.as_ref(), wants.as_slice());
+        assert!(
+            forwarded
+                .iter()
+                .all(|sent| sent.headers.get(header::AUTHORIZATION).unwrap() == "Bearer ATBB-read")
+        );
+
+        // Pushing rights do not include reading, and other repositories are out of reach.
+        for (token, uri) in [
+            (&pusher, advertisement.clone()),
+            (
+                &reader,
+                "/scm/PROJ/web.git/info/refs?service=git-upload-pack".to_owned(),
+            ),
+        ] {
+            let (status, headers, body) = fixture.send(git_request("GET", &uri, token, vec![])).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+            assert!(
+                body.starts_with("access token does not allow repo:read on PROJ/"),
+                "{body}"
+            );
+        }
+
+        // Only the smart protocol is forwarded.
+        for uri in [
+            format!("{GIT_REPO}/info/refs"),
+            format!("{GIT_REPO}/HEAD"),
+            "/scm/~alice/dotfiles.git/info/refs?service=git-upload-pack".to_owned(),
+        ] {
+            let (status, _, _) = fixture.send(git_request("GET", &uri, &reader, vec![])).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        }
+        assert_eq!(fixture.forwarded().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn git_pushes_stream_the_pack_with_the_rule_token() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([
+                { "bitbucket_token": fixture.read_token, "actions": ["repo:read"], "project": "PROJ", "repository": "api" },
+                { "bitbucket_token": fixture.write_token, "actions": ["branch:create", "branch:delete", "branch:git"],
+                  "project": "PROJ", "repository": "api", "branches": { "branch": ["bot/**"] } }
+            ]))
+            .await;
+
+        // The refs a push starts from are read with the first rule that reads or pushes.
+        let advertisement = format!("{GIT_REPO}/info/refs?service=git-receive-pack");
+        assert_eq!(
+            fixture.send(git_request("GET", &advertisement, &token, vec![])).await.0,
+            StatusCode::CREATED
+        );
+
+        // A pack larger than any buffer, with the commands split across chunks.
+        let pack: Vec<u8> = (0..3_000_000u32).map(|idx| (idx % 251) as u8).collect();
+        let body = push_body(
+            &[
+                format!("{OLD} {NEW} refs/heads/bot/deps"),
+                format!("{ZERO} {NEW} refs/heads/bot/new"),
+                format!("{OLD} {ZERO} refs/heads/bot/old"),
+            ],
+            &pack,
+        );
+        let chunks: Vec<Vec<u8>> = body
+            .chunks(37)
+            .take(5)
+            .map(<[u8]>::to_vec)
+            .chain([body[185..].to_vec()])
+            .collect();
+        let (status, _, _) = fixture
+            .send(git_request(
+                "POST",
+                &format!("{GIT_REPO}/git-receive-pack"),
+                &token,
+                chunks,
+            ))
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let forwarded = fixture.forwarded();
+        assert_eq!(forwarded.len(), 2);
+        assert_eq!(
+            forwarded[0].headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer ATBB-read"
+        );
+        assert_eq!(forwarded[1].path_and_query, format!("{GIT_REPO}/git-receive-pack"));
+        assert_eq!(
+            forwarded[1].headers.get(header::AUTHORIZATION).unwrap(),
+            "Bearer ATBB-write"
+        );
+        assert!(
+            forwarded[1].body.as_ref() == body.as_slice(),
+            "the push reaches Bitbucket byte for byte"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_git_pushes_are_reported_in_git_format() {
+        let fixture = fixture().await;
+        let token = fixture
+            .issue(json!([
+                { "bitbucket_token": fixture.read_token, "actions": ["repo:read", "branch:create"], "project": "PROJ", "repository": "api" },
+                { "bitbucket_token": fixture.write_token, "actions": ["branch:create", "branch:git"],
+                  "project": "PROJ", "repository": "api", "branches": { "branch": ["bot/**"] } },
+                { "bitbucket_token": fixture.write_token, "actions": ["branch:create", "branch:git"],
+                  "project": "PROJ", "repository": "api", "branches": { "branch": ["release/*"] } }
+            ]))
+            .await;
+        let receive_pack = format!("{GIT_REPO}/git-receive-pack");
+
+        for (commands, denied_ref, reason) in [
+            (
+                vec![format!("{OLD} {NEW} refs/heads/main")],
+                "refs/heads/main",
+                "access token does not allow Git to push to branch main",
+            ),
+            (
+                vec![format!("{OLD} {ZERO} refs/heads/bot/old")],
+                "refs/heads/bot/old",
+                "access token does not allow Git to delete branch bot/old",
+            ),
+            (
+                vec![
+                    format!("{OLD} {NEW} refs/heads/bot/x"),
+                    format!("{ZERO} {NEW} refs/tags/v1"),
+                ],
+                "refs/tags/v1",
+                "only branches can be pushed through the proxy",
+            ),
+            (
+                vec![
+                    format!("{OLD} {NEW} refs/heads/bot/x"),
+                    format!("{OLD} {NEW} refs/heads/release/1"),
+                ],
+                "refs/heads/release/1",
+                "access token does not allow Git to push to branch release/1",
+            ),
+        ] {
+            let body = push_body(&commands, b"PACK pack data");
+            let (status, headers, report) = fixture
+                .send(git_request("POST", &receive_pack, &token, vec![body]))
+                .await;
+
+            assert_eq!(status, StatusCode::OK, "{denied_ref}");
+            assert_eq!(
+                headers.get(header::CONTENT_TYPE).unwrap(),
+                "application/x-git-receive-pack-result"
+            );
+            assert!(report.contains(&format!("ng {denied_ref} {reason}\n")), "{report}");
+            assert!(
+                report.contains(&format!("\u{2}access token denied the push: {reason}\n")),
+                "{report}"
+            );
+        }
+
+        // A client that asks for no report gets a plain error.
+        let mut body = pkt(&format!("{OLD} {NEW} refs/heads/main\0agent=git/2.56.0\n"));
+        body.extend(b"0000PACK");
+        let (status, _, message) = fixture
+            .send(git_request("POST", &receive_pack, &token, vec![body]))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(message, "access token does not allow Git to push to branch main\n");
+
+        // Without branch:git anywhere, pushes are denied outright, and so are malformed ones.
+        let reader = fixture
+            .issue(json!([{ "bitbucket_token": fixture.read_token, "actions": ["repo:read", "branch:*"], "project": "PROJ", "repository": "web" }]))
+            .await;
+        let body = push_body(&[format!("{OLD} {NEW} refs/heads/main")], b"PACK");
+        let (_, _, report) = fixture
+            .send(git_request(
+                "POST",
+                "/scm/PROJ/api.git/git-receive-pack",
+                &reader,
+                vec![body],
+            ))
+            .await;
+        assert!(
+            report.contains("access token does not allow Git pushes to PROJ/api"),
+            "{report}"
+        );
+        let (status, _, _) = fixture
+            .send(git_request("POST", &receive_pack, &token, vec![b"0000".to_vec()]))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        assert!(fixture.forwarded().is_empty(), "denied pushes never reach Bitbucket");
     }
 }

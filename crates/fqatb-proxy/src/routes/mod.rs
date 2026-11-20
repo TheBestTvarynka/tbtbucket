@@ -3,6 +3,7 @@
 mod access_tokens;
 mod auth;
 mod bitbucket_tokens;
+mod git;
 mod health;
 mod management_api;
 mod management_tokens;

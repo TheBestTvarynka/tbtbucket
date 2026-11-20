@@ -38,7 +38,8 @@ pub(crate) enum Unsupported {
     #[error("path is malformed")]
     MalformedPath,
 
-    #[error("Git over HTTPS is not supported yet")]
+    /// The path is Git over HTTPS, which [`super::git`] classifies.
+    #[error("path is a Git request")]
     Git,
 
     #[error("personal repositories are not supported yet")]
@@ -107,7 +108,7 @@ pub(crate) fn classify(method: &Method, raw_path: &str) -> Result<Classified, Un
 ///
 /// Percent-encoding is decoded exactly once.
 /// Encoded slashes and backslashes, `.` and `..` segments, and empty segments are rejected; a single trailing slash is ignored.
-fn normalize(raw_path: &str) -> Result<Vec<String>, Unsupported> {
+pub(crate) fn normalize(raw_path: &str) -> Result<Vec<String>, Unsupported> {
     let path = raw_path.strip_prefix('/').ok_or(Unsupported::MalformedPath)?;
     let path = path.strip_suffix('/').unwrap_or(path);
 

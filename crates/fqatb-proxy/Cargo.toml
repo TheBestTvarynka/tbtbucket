@@ -36,6 +36,7 @@ subtle = "2.6"
 # Utils
 anyhow = "1.0"
 base64 = "0.23"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 globset = "0.4"
 hex = "0.4"
 percent-encoding = "2.3"

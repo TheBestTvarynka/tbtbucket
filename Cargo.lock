@@ -726,6 +726,7 @@ dependencies = [
  "axum-extra",
  "axum-server",
  "base64 0.23.1",
+ "futures-util",
  "getrandom 0.4.3",
  "globset",
  "hex",

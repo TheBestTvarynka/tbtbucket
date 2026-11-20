@@ -84,6 +84,45 @@ impl Policy {
             .filter(move |(_, rule)| rule.covers(action, project, repository))
     }
 
+    /// Returns the first rule that allows every branch change of a Git push, with its index.
+    ///
+    /// Each change is an action and the branch it applies to; the rule must allow it together with `branch:git` on
+    /// that branch.
+    pub(crate) fn git_push_rule(
+        &self,
+        project: &str,
+        repository: &str,
+        changes: &[(Action, &str)],
+    ) -> Option<(usize, &Rule)> {
+        self.git_push_candidates(project, repository).find(|(_, rule)| {
+            changes
+                .iter()
+                .all(|&(action, branch)| rule.allows_git_change(action, project, repository, branch))
+        })
+    }
+
+    /// Returns the rules that let Git pushes reach the repository at all, ignoring their branch conditions.
+    pub(crate) fn git_push_candidates<'s, 'r>(
+        &'s self,
+        project: &'r str,
+        repository: &'r str,
+    ) -> impl Iterator<Item = (usize, &'s Rule)> + use<'s, 'r> {
+        self.candidate_rules(Action::BranchGit, project, repository)
+    }
+
+    /// Returns the first rule that covers any of the actions on the repository, ignoring its branch conditions.
+    pub(crate) fn first_rule_covering(
+        &self,
+        actions: &[Action],
+        project: &str,
+        repository: &str,
+    ) -> Option<(usize, &Rule)> {
+        self.rules
+            .iter()
+            .enumerate()
+            .find(|(_, rule)| actions.iter().any(|&action| rule.covers(action, project, repository)))
+    }
+
     /// Returns the IDs of every Bitbucket token the rules use.
     pub(crate) fn bitbucket_tokens(&self) -> BTreeSet<Uuid> {
         self.rules.iter().map(|rule| rule.bitbucket_token).collect()
@@ -93,6 +132,22 @@ impl Policy {
 impl Rule {
     pub(crate) fn bitbucket_token(&self) -> Uuid {
         self.bitbucket_token
+    }
+
+    /// Whether the rule allows a Git push to change `branch` with `action`: it needs both the action and
+    /// `branch:git`, each with its branch conditions satisfied.
+    pub(crate) fn allows_git_change(&self, action: Action, project: &str, repository: &str, branch: &str) -> bool {
+        [action, Action::BranchGit].into_iter().all(|action| {
+            let request = Request {
+                action,
+                project,
+                repository,
+                branch: Some(branch),
+                source: None,
+                target: None,
+            };
+            self.covers(action, project, repository) && self.branches.are_satisfied_by(&request)
+        })
     }
 
     fn covers(&self, action: Action, project: &str, repository: &str) -> bool {
@@ -753,5 +808,67 @@ mod tests {
         ] }));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn git_pushes_need_branch_git_and_the_branch_action() {
+        const BOT_TOKEN: Uuid = Uuid::from_u128(3);
+        let policy = policy(json!({ "version": 1, "rules": [
+            { "bitbucket_token": READ_TOKEN, "actions": ["repo:read", "branch:create"], "project": "PROJ", "repository": "api" },
+            { "bitbucket_token": BOT_TOKEN, "actions": ["branch:create", "branch:git"], "project": "PROJ", "repository": "api",
+              "branches": { "branch": ["bot/**"] } },
+            { "bitbucket_token": PR_TOKEN, "actions": ["branch:*"], "project": "PROJ", "repository": "api",
+              "branches": { "branch": ["release/*"] } }
+        ] }));
+        let push = |changes: &[(Action, &str)]| {
+            policy
+                .git_push_rule("PROJ", "api", changes)
+                .map(|(_, rule)| rule.bitbucket_token())
+        };
+
+        // Rule 1 has no branch:git, so it allows no Git push even though it allows creating any branch.
+        assert_eq!(push(&[(Action::BranchCreate, "bot/deps")]), Some(BOT_TOKEN));
+        assert_eq!(push(&[(Action::BranchCreate, "main")]), None);
+
+        // branch:* includes branch:git.
+        assert_eq!(push(&[(Action::BranchDelete, "release/1")]), Some(PR_TOKEN));
+        // Rule 2 cannot delete.
+        assert_eq!(push(&[(Action::BranchDelete, "bot/deps")]), None);
+
+        // Every change must be allowed by one rule, and the first such rule wins.
+        assert_eq!(
+            push(&[(Action::BranchCreate, "bot/a"), (Action::BranchCreate, "bot/b")]),
+            Some(BOT_TOKEN)
+        );
+        assert_eq!(
+            push(&[(Action::BranchCreate, "bot/a"), (Action::BranchCreate, "release/1")]),
+            None
+        );
+
+        assert!(
+            policy
+                .git_push_rule("PROJ", "web", &[(Action::BranchCreate, "bot/a")])
+                .is_none()
+        );
+        assert_eq!(
+            policy
+                .git_push_candidates("PROJ", "api")
+                .map(|(idx, _)| idx)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn first_rule_covering_ignores_branch_conditions() {
+        let policy = policy(json!({ "version": 1, "rules": [
+            { "bitbucket_token": PR_TOKEN, "actions": ["pr:create"], "project": "PROJ", "repository": "api" },
+            { "bitbucket_token": READ_TOKEN, "actions": ["branch:create", "branch:git"], "project": "PROJ", "repository": "api",
+              "branches": { "branch": ["bot/**"] } }
+        ] }));
+
+        let first = |actions: &[Action]| policy.first_rule_covering(actions, "PROJ", "api").map(|(idx, _)| idx);
+        assert_eq!(first(&[Action::RepoRead, Action::BranchGit]), Some(1));
+        assert_eq!(first(&[Action::RepoRead]), None);
     }
 }
