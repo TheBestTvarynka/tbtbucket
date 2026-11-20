@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn branch_condition_for_branch_actions() {
         let policy = policy(json!({ "version": 1, "rules": [
-            { "bitbucket_token": PR_TOKEN, "actions": ["branch:create", "branch:push"], "project": "PROJ", "repository": "api",
+            { "bitbucket_token": PR_TOKEN, "actions": ["branch:create", "branch:git"], "project": "PROJ", "repository": "api",
               "branches": { "branch": ["bot/**"] } }
         ] }));
 
@@ -592,7 +592,7 @@ mod tests {
                 &policy,
                 Request {
                     branch: Some("main"),
-                    ..request(Action::BranchPush)
+                    ..request(Action::BranchGit)
                 }
             )
             .is_none()
@@ -704,7 +704,7 @@ mod tests {
             ..on(action)
         };
         assert!(decide(&policy, branch(Action::BranchCreate, "anything")).is_some());
-        assert!(decide(&policy, branch(Action::BranchPush, "anything")).is_none());
+        assert!(decide(&policy, branch(Action::BranchGit, "anything")).is_none());
     }
 
     #[test]

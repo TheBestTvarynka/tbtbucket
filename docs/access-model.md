@@ -150,9 +150,9 @@ A rule matches a request when all of these hold:
 
 Branch conditions only limit the actions they apply to:
 
-- `branch` applies to `branch:create`, `branch:delete` and `branch:push`;
+- `branch` applies to `branch:create`, `branch:delete` and `branch:git`;
 - `source` and `target` apply to every `pr:*` and `pr_comment:*` action;
-- nothing applies to `repo:read` or the `tag:*` actions, which are never limited by branches.
+- nothing applies to `repo:read`, which is never limited by branches.
 
 So one rule can allow reading everything in a repository and, at the same time, writing only to matching branches.
 
@@ -206,11 +206,11 @@ Read and create pull request comments, without editing or deleting them:
 { "bitbucket_token": "<pr-token>", "actions": ["repo:read", "pr_comment:create"], "project": "PROJ", "repository": "*" }
 ```
 
-Read everything in a repository, but write only `bot/` branches and pull requests from them:
+Read everything in a repository, but write only `bot/` branches, through the REST API and Git pushes, and pull requests from them:
 
 ```json
 { "version": 1, "rules": [
-  { "bitbucket_token": "<write-token>", "actions": ["repo:read", "branch:create", "branch:push", "pr:create", "pr:update"],
+  { "bitbucket_token": "<write-token>", "actions": ["repo:read", "branch:create", "branch:git", "pr:create", "pr:update"],
     "project": "PROJ", "repository": "api", "branches": { "branch": ["bot/**"], "source": ["bot/**"] } }
 ] }
 ```
@@ -233,9 +233,10 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 
 | Action | Endpoints | Branch attributes |
 | --- | --- | --- |
-| `repo:read` | Every read in the repository: `GET {repo}`; `GET` on its `browse`, `raw`, `files`, `commits` (including commit comments, builds and deployments), `compare`, `diff`, `last-modified` and `tags` subtrees; `GET {repo}/changes`, `participants`, `default-branch`, `branches/default`, `ref-change-activities` and `ref-change-activities/branches`; `GET {repo}/branches` and `GET branch-utils/{version}/…/branches/info/{commitId}`; `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}`, `{id}.diff` and `{id}.patch`, and its `activities`, `changes`, `commits`, `diff`, `diff-stats-summary`, `merge` (merge check), `merge-base`, `commit-message-suggestion`, `participants`, `review` and `auto-merge`; `GET` on its `comments` and `blocker-comments`; `GET jira/{version}/…/pull-requests/{id}/issues`; `GET insights/{version}/…/commits/{commitId}/reports` and `…/annotations` subtrees. Other methods on these paths, such as creating tags or posting build statuses, are not `repo:read`. | – |
-| `branch:create` | `POST {repo}/branches`, `POST branch-utils/{version}/…/branches` | `branch` from `name` in the body |
-| `branch:delete` | `DELETE branch-utils/{version}/…/branches` | `branch` from `name` in the body |
+| `repo:read` | Every read in the repository: `GET {repo}`; `GET` on its `browse`, `raw`, `files`, `commits` (including commit comments, builds and deployments), `compare`, `diff`, `last-modified` and `tags` subtrees; `GET {repo}/changes`, `participants`, `default-branch`, `branches/default`, `ref-change-activities` and `ref-change-activities/branches`; `GET {repo}/branches` and `GET branch-utils/{version}/…/branches/info/{commitId}`; `GET {repo}/pull-requests`, `GET {repo}/pull-requests/{id}`, `{id}.diff` and `{id}.patch`, and its `activities`, `changes`, `commits`, `diff`, `diff-stats-summary`, `merge` (merge check), `merge-base`, `commit-message-suggestion`, `participants`, `review` and `auto-merge`; `GET` on its `comments` and `blocker-comments`; `GET jira/{version}/…/pull-requests/{id}/issues`; `GET insights/{version}/…/commits/{commitId}/reports` and `…/annotations` subtrees; Git fetches, see [Git over HTTPS](#git-over-https). Other methods on these paths, such as creating tags or posting build statuses, are not `repo:read`. | – |
+| `branch:create` | `POST {repo}/branches`, `POST branch-utils/{version}/…/branches`; with `branch:git`, Git pushes that create or update a branch | `branch` from `name` in the body, or from the pushed ref |
+| `branch:delete` | `DELETE branch-utils/{version}/…/branches`; with `branch:git`, Git pushes that delete a branch | `branch` from `name` in the body, or from the pushed ref |
+| `branch:git` | Nothing on its own: it lets the rule's `branch:create` and `branch:delete` apply to Git pushes, see [Git over HTTPS](#git-over-https) | `branch` from the pushed ref |
 | `pr:create` | `POST {repo}/pull-requests` | `source` and `target` from `fromRef` and `toRef` in the body |
 | `pr:update` | `PUT {repo}/pull-requests/{id}`; `POST`, `DELETE {repo}/pull-requests/{id}/participants`, which add and remove reviewers | `source` and `target` of the existing pull request, and `target` from `toRef` in the body if it changes |
 | `pr:review` | `PUT`, `DELETE {repo}/pull-requests/{id}/participants/{userSlug}`, `POST`, `DELETE {repo}/pull-requests/{id}/approve`, `PUT`, `DELETE {repo}/pull-requests/{id}/review`, which complete the token's own review or discard it | `source` and `target` of the existing pull request |
@@ -246,8 +247,6 @@ They follow the Bitbucket Data Center 10.2 REST API, whose OpenAPI description i
 | `pr_comment:create` | `POST {repo}/pull-requests/{id}/comments`, `POST …/blocker-comments`; `PUT`, `DELETE comment-likes/{version}/…/pull-requests/{id}/comments/{commentId}/reactions/{emoticon}`, since a reaction is the token's own lightweight comment | `source` and `target` of the existing pull request |
 | `pr_comment:update` | `PUT {repo}/pull-requests/{id}/comments/{commentId}`, `PUT …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
 | `pr_comment:delete` | `DELETE {repo}/pull-requests/{id}/comments/{commentId}`, `DELETE …/blocker-comments/{commentId}` | `source` and `target` of the existing pull request |
-| `branch:push` | Git push, see [Git over HTTPS](#git-over-https) | `branch` from the pushed ref |
-| `tag:create`, `tag:push`, `tag:delete` | Git push, see [Git over HTTPS](#git-over-https) | – |
 
 Any request that does not match a row is denied, including endpoints that share a path with an allowed one.
 In particular, these are denied:
@@ -320,26 +319,55 @@ Allowed requests are logged at debug level with the rule that matched and the Bi
 
 ## Git over HTTPS
 
-Bitbucket Data Center serves Git at `/scm/{projectKey}/{repositorySlug}.git/…`.
+Bitbucket Data Center serves Git at `/scm/{projectKey}/{repositorySlug}.git/…`, with or without the `.git` suffix.
+The project and repository in that path select the rules, like the `{repo}` part of a REST path does.
 
-- Fetching (`info/refs?service=git-upload-pack` and `git-upload-pack`) is `repo:read`.
-- Pushing (`info/refs?service=git-receive-pack` and `git-receive-pack`) starts with one command per ref, `<old-id> <new-id> <ref>`, before the pack data.
-  Each command becomes one check:
+### Fetching
 
-  | Ref | Old ID | New ID | Action |
-  | --- | --- | --- | --- |
-  | `refs/heads/<branch>` | zero | any | `branch:create` |
-  | `refs/heads/<branch>` | any | zero | `branch:delete` |
-  | `refs/heads/<branch>` | non-zero | non-zero | `branch:push` |
-  | `refs/tags/<tag>` | zero | any | `tag:create` |
-  | `refs/tags/<tag>` | any | zero | `tag:delete` |
-  | `refs/tags/<tag>` | non-zero | non-zero | `tag:push` |
-  | anything else | | | denied |
+Cloning, fetching, pulling and `ls-remote` go through `git-upload-pack`:
+`GET …/info/refs?service=git-upload-pack` advertises the refs and `POST …/git-upload-pack` sends the objects.
+Both are `repo:read`, whatever the client asks for: shallow and partial clones, pull request refs such as `refs/pull-requests/1/from`, and Git protocol version 2 alike.
+Fetches are never limited by branches, since a client can ask for any object reachable in the repository.
 
-  A push is allowed only if every command is.
-  Telling a force push from a fast-forward needs the commit graph, so force pushes are left to Bitbucket's own branch permissions.
+### Pushing
 
-The actions and branch conditions above already describe these checks, so supporting Git changes the classifier but not the policy format.
+Pushes go through `git-receive-pack`: `GET …/info/refs?service=git-receive-pack` advertises the refs, then `POST …/git-receive-pack` sends one command per ref, `<old-id> <new-id> <ref>`, followed by the pack.
+The proxy reads the commands, checks them, and streams the pack to Bitbucket without holding it.
+
+Each command needs a rule that has `branch:git`, whose `branch` condition, if any, matches the branch, and that has:
+
+| Ref | Command | Action |
+| --- | --- | --- |
+| `refs/heads/<branch>` | old ID is zero: creates the branch | `branch:create` |
+| `refs/heads/<branch>` | neither ID is zero: updates the branch, force pushes included | `branch:create` |
+| `refs/heads/<branch>` | new ID is zero: deletes the branch | `branch:delete` |
+| `refs/tags/<tag>`, or any other ref | | denied |
+
+Updating a branch needs `branch:create` because a client that may push commits to a new branch has no reason to be kept from updating it.
+Telling a force push from a fast-forward would need the commit graph, so force pushes are left to Bitbucket's own branch permissions.
+
+One push is one request, forwarded with one Bitbucket token, so it is allowed by the first rule that allows every command in it, and that rule's Bitbucket token forwards it.
+If no single rule allows every command, the push is denied as a whole, naming a ref the first candidate rule does not allow; pushing the refs separately lets each find its own rule.
+`git push --atomic` needs nothing more: every command is checked either way.
+
+`GET …/info/refs?service=git-receive-pack` reveals nothing a fetch would not, so it needs `repo:read` or `branch:git`.
+
+### Authentication and errors
+
+Git sends no credentials on its first request.
+The proxy answers it with `401` and `WWW-Authenticate: Basic realm="Bitbucket"`, Git asks its credential helper or prompts, and retries with the access token as the Basic password; the username is ignored.
+`http.extraHeader="Authorization: Bearer fgatb_…"` works too and suits CI.
+
+The status tells Git what to do with the credentials:
+
+- `401` for a missing, invalid, expired or removed access token: Git's credential helper forgets it, and Git asks again;
+- `403` for a valid access token that does not allow the request: the credentials are kept, and Git reports the error.
+
+A denied push is answered in Git's own report format with `ng <ref> <reason>` for the denied ref, so `git push` names the ref and the reason, and nothing is pushed.
+
+### Out of scope
+
+Git LFS, Git over SSH, `git archive --remote` and personal repositories (`/scm/~{userSlug}/…`) are not supported, and are denied.
 
 ## Not yet supported
 

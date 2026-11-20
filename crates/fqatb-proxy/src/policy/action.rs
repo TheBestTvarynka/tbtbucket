@@ -8,12 +8,12 @@ use std::str::FromStr;
 pub(crate) enum Action {
     /// Every read: code, commits, tags, branches, pull requests and their comments.
     RepoRead,
+    /// Creating a branch; with [`Action::BranchGit`], also pushing to a branch with Git.
     BranchCreate,
+    /// Deleting a branch; with [`Action::BranchGit`], also deleting it with Git.
     BranchDelete,
-    BranchPush,
-    TagCreate,
-    TagPush,
-    TagDelete,
+    /// Lets the rule's `branch:create` and `branch:delete` apply to Git pushes too; it allows nothing on its own.
+    BranchGit,
     PrCreate,
     PrUpdate,
     PrReview,
@@ -31,21 +31,18 @@ pub(crate) enum Action {
 pub(crate) enum BranchScope {
     /// No single branch is involved.
     None,
-    /// The branch being created, deleted or pushed.
+    /// The branch being created, deleted or pushed to.
     Branch,
     /// The source and target branches of a pull request.
     PullRequest,
 }
 
 impl Action {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::RepoRead,
         Self::BranchCreate,
         Self::BranchDelete,
-        Self::BranchPush,
-        Self::TagCreate,
-        Self::TagPush,
-        Self::TagDelete,
+        Self::BranchGit,
         Self::PrCreate,
         Self::PrUpdate,
         Self::PrReview,
@@ -63,10 +60,7 @@ impl Action {
             Self::RepoRead => "repo:read",
             Self::BranchCreate => "branch:create",
             Self::BranchDelete => "branch:delete",
-            Self::BranchPush => "branch:push",
-            Self::TagCreate => "tag:create",
-            Self::TagPush => "tag:push",
-            Self::TagDelete => "tag:delete",
+            Self::BranchGit => "branch:git",
             Self::PrCreate => "pr:create",
             Self::PrUpdate => "pr:update",
             Self::PrReview => "pr:review",
@@ -87,7 +81,7 @@ impl Action {
 
     pub(crate) fn branch_scope(self) -> BranchScope {
         match self {
-            Self::BranchCreate | Self::BranchDelete | Self::BranchPush => BranchScope::Branch,
+            Self::BranchCreate | Self::BranchDelete | Self::BranchGit => BranchScope::Branch,
             Self::PrCreate
             | Self::PrUpdate
             | Self::PrReview
@@ -98,7 +92,7 @@ impl Action {
             | Self::PrCommentCreate
             | Self::PrCommentUpdate
             | Self::PrCommentDelete => BranchScope::PullRequest,
-            Self::RepoRead | Self::TagCreate | Self::TagPush | Self::TagDelete => BranchScope::None,
+            Self::RepoRead => BranchScope::None,
         }
     }
 }

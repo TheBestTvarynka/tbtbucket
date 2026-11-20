@@ -58,9 +58,7 @@ struct ActionOption {
 /// The action checked on a new rule card.
 const DEFAULT_ACTION: &str = "repo:read";
 
-/// Actions offered in the form.
-///
-/// Tag actions (`tag:*`) are left out: tags are only changed with Git pushes, which are not forwarded yet.
+/// Actions offered in the form: every action of the policy format.
 const ACTION_GROUPS: &[ActionGroup] = &[
     ActionGroup {
         label: "Repository",
@@ -93,15 +91,15 @@ const ACTION_GROUPS: &[ActionGroup] = &[
                 label: "delete",
             },
             ActionOption {
-                name: "branch:push",
+                name: "branch:git",
                 label: "Allow Git",
             },
         ],
         branch_pattern: true,
         help: Some(
-            "Allow Git lets the client push to the branches that match the pattern with Git over HTTPS, \
-             force pushes included. Creating and deleting a branch by pushing also needs create and delete. \
-             The proxy does not forward Git over HTTPS yet; until it does, this option has no effect.",
+            "With Allow Git, create also allows pushing to the branches that match the pattern with Git over \
+             HTTPS, force pushes included, and delete allows deleting them with Git. Pushes of tags and other \
+             refs are always denied.",
         ),
         uncheck_confirmation: None,
     },
@@ -999,13 +997,15 @@ mod tests {
             .split(r#"<div class="action-group">"#)
             .find(|row| row.contains("Branches"))
             .unwrap();
-        assert!(branches_row.contains(r#"value="branch:push""#));
+        assert!(branches_row.contains(r#"value="branch:git""#));
         assert!(branches_row.contains("> Allow Git</label>"));
-        assert!(branches_row.contains(r#"data-tooltip="Allow Git lets the client push to the branches that match the pattern with Git over HTTPS, force pushes included."#));
-        assert!(!is_checked(&card, "branch:push"));
+        assert!(branches_row.contains(
+            r#"data-tooltip="With Allow Git, create also allows pushing to the branches that match the pattern"#
+        ));
+        assert!(!is_checked(&card, "branch:git"));
         assert_eq!(card.matches(r#"class="help-icon""#).count(), 2);
 
-        // A rule with only Git pushes is valid, and the branch pattern limits it.
+        // The branch pattern limits Git pushes like it limits create and delete.
         let response = send(
             &app,
             create_request(
@@ -1016,7 +1016,8 @@ mod tests {
                     ("rule.g.bitbucket_token", &token),
                     ("rule.g.project", "PROJ"),
                     ("rule.g.repository", "api"),
-                    ("rule.g.actions", "branch:push"),
+                    ("rule.g.actions", "branch:create"),
+                    ("rule.g.actions", "branch:git"),
                     ("rule.g.branch", "bot/**"),
                 ],
             ),
@@ -1032,7 +1033,10 @@ mod tests {
             .unwrap()
             .policy;
         let policy = serde_json::to_value(&policy).unwrap();
-        assert_eq!(policy["rules"][0]["actions"], serde_json::json!(["branch:push"]));
+        assert_eq!(
+            policy["rules"][0]["actions"],
+            serde_json::json!(["branch:create", "branch:git"])
+        );
         assert_eq!(policy["rules"][0]["branches"]["branch"], serde_json::json!(["bot/**"]));
     }
 
