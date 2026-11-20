@@ -7,7 +7,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::model::*;
-use super::{AccessTokenDb, AdminDb, BitbucketTokenDb, DbError, SessionDb};
+use super::{AccessTokenDb, AdminDb, BitbucketTokenDb, DbError, ManagementTokenDb, SessionDb};
 use crate::crypto::Cipher;
 use crate::error::report;
 
@@ -398,6 +398,84 @@ impl AccessTokenDb for Db {
         .await?;
 
         Ok(names)
+    }
+}
+
+impl ManagementTokenDb for Db {
+    async fn add_management_token(&self, token: &ManagementToken) -> Result<(), DbError> {
+        let created_at = format_utc_timestamp(token.created_at)
+            .map_err(|error| DbError::FormatTimestamp("management token creation", error))?;
+        let expires_at = format_utc_timestamp(token.expires_at)
+            .map_err(|error| DbError::FormatTimestamp("management token expiration", error))?;
+
+        sqlx::query(
+            "INSERT INTO management_tokens (id, name, secret_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(token.id.to_string())
+        .bind(&token.name)
+        .bind(token.secret_hash.as_slice())
+        .bind(created_at)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            if is_unique_violation(&error) {
+                DbError::ManagementTokenNameTaken
+            } else {
+                DbError::Sqlx(error)
+            }
+        })?;
+
+        Ok(())
+    }
+
+    async fn management_token(&self, id: Uuid) -> Result<Option<ManagementToken>, DbError> {
+        let row: Option<(String, Vec<u8>, String, String)> =
+            sqlx::query_as("SELECT name, secret_hash, created_at, expires_at FROM management_tokens WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let Some((name, secret_hash, created_at, expires_at)) = row else {
+            return Ok(None);
+        };
+
+        Ok(Some(ManagementToken {
+            id,
+            name,
+            secret_hash: secret_hash
+                .try_into()
+                .map_err(|_| DbError::InvalidHash("management token secret"))?,
+            created_at: parse_utc_timestamp(&created_at, "management token creation")?,
+            expires_at: parse_utc_timestamp(&expires_at, "management token expiration")?,
+        }))
+    }
+
+    async fn management_tokens(&self) -> Result<Vec<ManagementTokenSummary>, DbError> {
+        let rows: Vec<(String, String, String, String)> =
+            sqlx::query_as("SELECT id, name, created_at, expires_at FROM management_tokens ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
+
+        rows.into_iter()
+            .map(|(id, name, created_at, expires_at)| {
+                Ok(ManagementTokenSummary {
+                    id: Uuid::parse_str(&id).map_err(|error| DbError::InvalidId("management token", error))?,
+                    name,
+                    created_at: parse_utc_timestamp(&created_at, "management token creation")?,
+                    expires_at: parse_utc_timestamp(&expires_at, "management token expiration")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn remove_management_token(&self, id: Uuid) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM management_tokens WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(0 < result.rows_affected())
     }
 }
 
@@ -931,5 +1009,64 @@ mod tests {
                 .is_empty()
         );
         assert!(db.remove_bitbucket_token(bitbucket.id).await.unwrap());
+    }
+
+    fn management_token(name: &str) -> ManagementToken {
+        let now = OffsetDateTime::now_utc();
+        ManagementToken {
+            id: Uuid::new_v4(),
+            name: name.to_owned(),
+            secret_hash: [4; 32],
+            created_at: now,
+            expires_at: now + time::Duration::days(7),
+        }
+    }
+
+    #[tokio::test]
+    async fn management_tokens_add_list_remove() {
+        let db = db().await;
+        let token = management_token("ci");
+        db.add_management_token(&token).await.unwrap();
+        db.add_management_token(&management_token("backup")).await.unwrap();
+
+        let found = db.management_token(token.id).await.unwrap().unwrap();
+        assert_eq!((found.name.as_str(), found.secret_hash), ("ci", [4; 32]));
+        assert_eq!(found.expires_at.unix_timestamp(), token.expires_at.unix_timestamp());
+        assert!(db.management_token(Uuid::new_v4()).await.unwrap().is_none());
+
+        let names: Vec<_> = db
+            .management_tokens()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|token| token.name)
+            .collect();
+        assert_eq!(names, ["backup", "ci"]);
+
+        assert!(db.remove_management_token(token.id).await.unwrap());
+        assert!(!db.remove_management_token(token.id).await.unwrap());
+        assert!(db.management_token(token.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn management_token_constraints() {
+        let db = db().await;
+        db.add_management_token(&management_token("ci")).await.unwrap();
+
+        assert!(matches!(
+            db.add_management_token(&management_token("ci")).await,
+            Err(DbError::ManagementTokenNameTaken)
+        ));
+
+        let short_hash = sqlx::query(
+            "INSERT INTO management_tokens (id, name, secret_hash, created_at, expires_at) \
+             VALUES ('x', 'short', x'00', '2026-11-20T00:00:00Z', '2026-11-21T00:00:00Z')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(short_hash.is_err());
+
+        // Management tokens are kept apart from access tokens.
+        assert_eq!(access_token_count(&db).await, 0);
     }
 }

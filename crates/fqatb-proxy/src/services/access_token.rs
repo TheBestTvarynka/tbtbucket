@@ -1,20 +1,17 @@
 //! Access tokens issued by the proxy.
 //!
-//! Format: `fgatb_` followed by unpadded URL-safe base64 of `id (16) ‖ secret (32) ‖ HMAC-SHA256(id ‖ secret) (32)`.
-//! See the Access tokens section of `docs/access-model.md` for the reasoning behind each part.
+//! See [`super::token`] for the format, and the Access tokens section of `docs/access-model.md` for the reasoning behind
+//! each part.
 
 use std::sync::Arc;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secret::Secret;
-use sha2::{Digest as _, Sha256};
-use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::crypto::{TOKEN_TAG_LEN, TokenMac};
+use super::token::{TokenCodec, secret_matches};
+use crate::crypto::TokenMac;
 use crate::db::{AccessToken, AccessTokenDb, AccessTokenSummary, DbError};
 use crate::policy::Policy;
 use crate::{Error, Result};
@@ -24,10 +21,6 @@ pub(crate) const ACCESS_TOKEN_PREFIX: &str = "fgatb_";
 
 /// Longest accepted access token name, in characters.
 pub(crate) const MAX_ACCESS_TOKEN_NAME_LEN: usize = 100;
-
-const ID_LEN: usize = 16;
-const SECRET_LEN: usize = 32;
-const PAYLOAD_LEN: usize = ID_LEN + SECRET_LEN + TOKEN_TAG_LEN;
 
 /// Why a new access token was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -58,46 +51,15 @@ pub(crate) struct IssuedAccessToken {
 /// Issues, verifies and removes access tokens.
 pub(crate) struct AccessTokenService<D> {
     db: Arc<D>,
-    mac: TokenMac,
+    codec: TokenCodec,
 }
 
 impl<D> AccessTokenService<D> {
     pub(crate) fn new(db: Arc<D>, mac: TokenMac) -> Self {
-        Self { db, mac }
-    }
-
-    fn encode(&self, id: Uuid, secret: &[u8; SECRET_LEN]) -> Secret<String> {
-        let mut payload = Secret::new(Vec::with_capacity(PAYLOAD_LEN));
-        payload.as_mut().extend_from_slice(id.as_bytes());
-        payload.as_mut().extend_from_slice(secret);
-        let tag = self.mac.tag(payload.as_ref());
-        payload.as_mut().extend_from_slice(&tag);
-
-        Secret::new(format!(
-            "{ACCESS_TOKEN_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(payload.as_ref())
-        ))
-    }
-
-    /// Returns the ID and secret of a token minted by this proxy, checking its tag in constant time.
-    fn decode(&self, presented: &str) -> Option<(Uuid, Secret<[u8; SECRET_LEN]>)> {
-        let encoded = presented.strip_prefix(ACCESS_TOKEN_PREFIX)?;
-        let payload = Secret::new(URL_SAFE_NO_PAD.decode(encoded).ok()?);
-
-        if payload.as_ref().len() != PAYLOAD_LEN {
-            return None;
+        Self {
+            db,
+            codec: TokenCodec::new(ACCESS_TOKEN_PREFIX, mac),
         }
-
-        let (message, tag) = payload.as_ref().split_at(ID_LEN + SECRET_LEN);
-        if !self.mac.verify(message, tag) {
-            return None;
-        }
-
-        let (id, secret) = message.split_at(ID_LEN);
-        let id = Uuid::from_slice(id).expect("the ID part is 16 bytes long");
-        let secret = Secret::new(secret.try_into().expect("the secret part is 32 bytes long"));
-
-        Some((id, secret))
     }
 }
 
@@ -129,13 +91,12 @@ impl<D: AccessTokenDb> AccessTokenService<D> {
         }
 
         let id = Uuid::new_v4();
-        let mut secret = Secret::new([0; SECRET_LEN]);
-        getrandom::fill(secret.as_mut()).map_err(Error::Random)?;
+        let generated = self.codec.generate(id)?;
 
         let token = AccessToken {
             id,
             name: name.to_owned(),
-            secret_hash: Sha256::digest(secret.as_ref()).into(),
+            secret_hash: generated.secret_hash,
             policy,
             created_at: now,
             expires_at,
@@ -149,13 +110,13 @@ impl<D: AccessTokenDb> AccessTokenService<D> {
 
         Ok(IssuedAccessToken {
             id,
-            token: self.encode(id, secret.as_ref()),
+            token: generated.token,
         })
     }
 
     /// Returns the access token a client presented, if it is genuine, known and not expired.
     pub(crate) async fn authenticate(&self, presented: &str) -> Result<Option<AccessToken>> {
-        let Some((id, secret)) = self.decode(presented) else {
+        let Some((id, secret)) = self.codec.decode(presented) else {
             debug!("Rejected malformed or forged access token");
             return Ok(None);
         };
@@ -165,8 +126,7 @@ impl<D: AccessTokenDb> AccessTokenService<D> {
             return Ok(None);
         };
 
-        let secret_hash: [u8; 32] = Sha256::digest(secret.as_ref()).into();
-        if !bool::from(secret_hash.ct_eq(&token.secret_hash)) {
+        if !secret_matches(secret.as_ref(), &token.secret_hash) {
             debug!(access_token_id = %id, "Rejected access token with a wrong secret");
             return Ok(None);
         }
@@ -198,6 +158,7 @@ mod tests {
     use super::*;
     use crate::crypto::{Cipher, KEY_LEN};
     use crate::db::{BitbucketToken, BitbucketTokenDb, Db};
+    use crate::services::token::{SECRET_LEN, secret_hash};
 
     struct Fixture {
         service: AccessTokenService<Db>,
@@ -331,7 +292,7 @@ mod tests {
         } = fixture().await;
         let issued = service.issue("ci", policy(bitbucket_token), in_days(1)).await.unwrap();
 
-        let forged = service.encode(issued.id, &[0x42; SECRET_LEN]);
+        let forged = service.codec.encode(issued.id, &[0x42; SECRET_LEN]);
 
         assert!(service.authenticate(forged.as_ref()).await.unwrap().is_none());
     }
@@ -347,7 +308,7 @@ mod tests {
         db.add_access_token(&AccessToken {
             id,
             name: "old".to_owned(),
-            secret_hash: Sha256::digest(secret).into(),
+            secret_hash: secret_hash(&secret),
             policy: policy(bitbucket_token),
             created_at: in_days(-10),
             expires_at: in_days(-1),
@@ -357,7 +318,7 @@ mod tests {
 
         assert!(
             service
-                .authenticate(service.encode(id, &secret).as_ref())
+                .authenticate(service.codec.encode(id, &secret).as_ref())
                 .await
                 .unwrap()
                 .is_none()

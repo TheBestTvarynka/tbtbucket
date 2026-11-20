@@ -1,0 +1,52 @@
+<section id="management-tokens">
+  {% if let Some(issued) = issued %}
+  <article class="issued-token">
+    <p><strong>Management token &#34;{{ issued.name }}&#34; created.</strong> Copy it now: it is shown only once and cannot be recovered.</p>
+    <fieldset role="group">
+      <input id="issued-token-value" type="text" readonly aria-label="Management token" value="{{ issued.token }}">
+      <button
+        type="button"
+        hx-on:click="navigator.clipboard.writeText(document.getElementById('issued-token-value').value); this.textContent = 'Copied'"
+      >Copy</button>
+    </fieldset>
+  </article>
+  {% endif %}
+
+  {# The form stays open only to show what was wrong with a rejected attempt. #}
+  {% let open = error.is_some() %}
+  <button
+    type="button"
+    class="add-token"
+    hx-on:click="this.hidden = true; const form = document.getElementById('management-token-form'); form.hidden = false; form.elements.namedItem('name').focus()"
+    {% if open %}hidden{% endif %}
+  >Add management token</button>
+
+  <form id="management-token-form" hx-post="/fgatbapi/management_tokens" hx-target="#management-tokens" hx-swap="outerHTML"{% if !open %} hidden{% endif %}>
+    <div class="token-meta">
+      <label>
+        Name
+        <input name="name" value="{{ name }}" maxlength="{{ max_name_len }}" autocomplete="off" required>
+      </label>
+      <label>
+        Expires
+        <select name="expiry">
+          {% for option in lifetime_options %}
+          <option value="{{ option.days }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    {% if let Some(error) = error %}<small class="form-error">{{ error }}</small>{% endif %}
+    <div class="form-actions">
+      <button type="submit">Create management token</button>
+      <button
+        type="button"
+        class="secondary outline"
+        hx-on:click="const form = this.closest('form'); form.elements.namedItem('name').value = ''; form.elements.namedItem('expiry').value = '{{ crate::services::DEFAULT_TOKEN_LIFETIME_DAYS }}'; form.querySelector('.form-error')?.remove(); form.hidden = true; document.querySelector('.add-token').hidden = false"
+      >Cancel</button>
+    </div>
+  </form>
+
+  {% include "partials/management_tokens_list.html" %}
+</section>

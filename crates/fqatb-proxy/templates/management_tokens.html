@@ -6,5 +6,7 @@
 {% include "partials/header.html" %}
 <main class="container app-page">
   <h2>Management tokens</h2>
+  <p class="page-hint">Management tokens authenticate the management API under <code>/fgatbapi/v1/</code>, which adds and removes Bitbucket and access tokens without the admin panel.</p>
+  {% include "partials/management_tokens_section.html" %}
 </main>
 {% endblock %}

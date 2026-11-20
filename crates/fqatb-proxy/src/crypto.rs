@@ -6,7 +6,8 @@
 //!
 //! Every message is bound to a caller-chosen context, so that a ciphertext cannot be moved to another column, row or cookie.
 //!
-//! Access tokens are authenticated with [`TokenMac`], an HMAC-SHA256 key derived the same way with its own salt.
+//! Access tokens and management tokens are authenticated with [`TokenMac`], HMAC-SHA256 keys derived the same way with
+//! a salt of their own each, so that a token of one kind never verifies as the other.
 //!
 //! [RFC 5869]: https://www.rfc-editor.org/rfc/rfc5869
 
@@ -29,7 +30,9 @@ const KEY_INFO: &[u8] = b"fqatb-proxy AES-256-GCM key";
 
 const TOKEN_MAC_KEY_INFO: &[u8] = b"fqatb-proxy access token HMAC-SHA256 key";
 
-/// Length of an access token tag in bytes.
+const MANAGEMENT_TOKEN_MAC_KEY_INFO: &[u8] = b"fqatb-proxy management token HMAC-SHA256 key";
+
+/// Length of a token tag in bytes.
 pub(crate) const TOKEN_TAG_LEN: usize = 32;
 
 const DATABASE_SALT: [u8; 32] = [
@@ -45,6 +48,11 @@ const SESSION_SALT: [u8; 32] = [
 const TOKEN_MAC_SALT: [u8; 32] = [
     0xed, 0xa7, 0xd3, 0x4a, 0x90, 0x4b, 0x23, 0x77, 0x62, 0x82, 0x99, 0x31, 0x32, 0x00, 0x78, 0x39, 0x01, 0x06, 0x93,
     0xd1, 0x06, 0x10, 0x02, 0x0c, 0x65, 0xaa, 0xc7, 0x25, 0xe4, 0x98, 0x2e, 0xea,
+];
+
+const MANAGEMENT_TOKEN_MAC_SALT: [u8; 32] = [
+    0xc2, 0x16, 0x31, 0xc7, 0x71, 0xb3, 0x96, 0xad, 0x84, 0x7b, 0x3c, 0x82, 0x88, 0x61, 0xe9, 0xea, 0x6e, 0xbd, 0x4b,
+    0x97, 0xe4, 0x40, 0x39, 0x4f, 0xd9, 0x97, 0x20, 0x65, 0x19, 0x85, 0xff, 0xcb,
 ];
 
 /// Encrypts and authenticates messages with one derived key.
@@ -128,7 +136,7 @@ impl Cipher {
     }
 }
 
-/// Authenticates access tokens, so that guessed or forged tokens are rejected without a database lookup.
+/// Authenticates tokens the proxy hands out, so that guessed or forged tokens are rejected without a database lookup.
 pub(crate) struct TokenMac {
     key: Secret<[u8; 32]>,
 }
@@ -137,6 +145,12 @@ impl TokenMac {
     pub(crate) fn for_access_tokens(master_key: &Secret<[u8; KEY_LEN]>) -> Self {
         Self {
             key: derive_key(master_key, &TOKEN_MAC_SALT, TOKEN_MAC_KEY_INFO),
+        }
+    }
+
+    pub(crate) fn for_management_tokens(master_key: &Secret<[u8; KEY_LEN]>) -> Self {
+        Self {
+            key: derive_key(master_key, &MANAGEMENT_TOKEN_MAC_SALT, MANAGEMENT_TOKEN_MAC_KEY_INFO),
         }
     }
 
@@ -299,5 +313,12 @@ mod tests {
         assert!(!mac.verify(b"token payload!", &tag));
         assert!(!mac.verify(b"token payload", &tag[..31]));
         assert!(!TokenMac::for_access_tokens(&Secret::new([8; KEY_LEN])).verify(b"token payload", &tag));
+    }
+
+    #[test]
+    fn token_kinds_use_independent_mac_keys() {
+        let tag = TokenMac::for_access_tokens(&master_key()).tag(b"token payload");
+
+        assert!(!TokenMac::for_management_tokens(&master_key()).verify(b"token payload", &tag));
     }
 }

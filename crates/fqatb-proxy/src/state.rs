@@ -7,7 +7,9 @@ use crate::bitbucket::client::BitbucketClient;
 use crate::config::Config;
 use crate::crypto::{Cipher, TokenMac};
 use crate::db::Db;
-use crate::services::{AccessTokenService, AdminService, BitbucketTokenService, ProxyService, SessionService};
+use crate::services::{
+    AccessTokenService, AdminService, BitbucketTokenService, ManagementTokenService, ProxyService, SessionService,
+};
 
 /// Everything request handlers need, built once at start-up.
 pub(crate) struct State<D> {
@@ -16,6 +18,7 @@ pub(crate) struct State<D> {
     pub(crate) session_service: SessionService<D>,
     pub(crate) bitbucket_token_service: BitbucketTokenService<D>,
     pub(crate) access_token_service: AccessTokenService<D>,
+    pub(crate) management_token_service: ManagementTokenService<D>,
     pub(crate) proxy_service: ProxyService<D>,
 }
 
@@ -39,7 +42,8 @@ impl ServerState {
 
         let db_cipher = Cipher::for_database(&encryption_key);
         let session_cipher = Cipher::for_sessions(&encryption_key);
-        let token_mac = TokenMac::for_access_tokens(&encryption_key);
+        let access_token_mac = TokenMac::for_access_tokens(&encryption_key);
+        let management_token_mac = TokenMac::for_management_tokens(&encryption_key);
         drop(encryption_key);
 
         let db = Arc::new(Db::connect(&database_url, db_cipher).await?);
@@ -49,7 +53,8 @@ impl ServerState {
             admin_service: AdminService::new(Arc::clone(&db)),
             session_service: SessionService::new(Arc::clone(&db), session_cipher),
             bitbucket_token_service: BitbucketTokenService::new(Arc::clone(&db)),
-            access_token_service: AccessTokenService::new(Arc::clone(&db), token_mac),
+            access_token_service: AccessTokenService::new(Arc::clone(&db), access_token_mac),
+            management_token_service: ManagementTokenService::new(Arc::clone(&db), management_token_mac),
             proxy_service: ProxyService::new(Arc::clone(&db), client),
             db,
         };
@@ -85,6 +90,10 @@ impl ServerState {
             session_service: SessionService::new(Arc::clone(&db), Cipher::for_sessions(&master_key)),
             bitbucket_token_service: BitbucketTokenService::new(Arc::clone(&db)),
             access_token_service: AccessTokenService::new(Arc::clone(&db), TokenMac::for_access_tokens(&master_key)),
+            management_token_service: ManagementTokenService::new(
+                Arc::clone(&db),
+                TokenMac::for_management_tokens(&master_key),
+            ),
             proxy_service: ProxyService::new(Arc::clone(&db), client),
             db,
         }

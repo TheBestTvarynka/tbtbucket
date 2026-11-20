@@ -19,7 +19,7 @@
   {% let open = error.is_some() %}
   <button
     type="button"
-    class="add-access-token"
+    class="add-token"
     hx-on:click="this.hidden = true; const form = document.getElementById('access-token-form'); form.hidden = false; form.elements.namedItem('name').focus()"
     {% if open %}hidden{% endif %}
   >Add access token</button>
@@ -34,7 +34,7 @@
         Expires
         <select name="expiry">
           {% for option in form.expiry_options() %}
-          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+          <option value="{{ option.days }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
       </label>
@@ -62,7 +62,7 @@
       <button
         type="button"
         class="secondary outline"
-        hx-on:click="const form = this.closest('form'); form.elements.namedItem('name').value = ''; form.elements.namedItem('expiry').value = '{{ crate::routes::access_tokens::DEFAULT_EXPIRY }}'; document.getElementById('rule-cards').replaceChildren(); form.querySelector('.form-error')?.remove(); form.hidden = true; document.querySelector('.add-access-token').hidden = false"
+        hx-on:click="const form = this.closest('form'); form.elements.namedItem('name').value = ''; form.elements.namedItem('expiry').value = '{{ crate::services::DEFAULT_TOKEN_LIFETIME_DAYS }}'; document.getElementById('rule-cards').replaceChildren(); form.querySelector('.form-error')?.remove(); form.hidden = true; document.querySelector('.add-token').hidden = false"
       >Cancel</button>
     </div>
   </form>

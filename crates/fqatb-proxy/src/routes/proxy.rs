@@ -10,9 +10,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use secret::Secret;
-use serde_json::json;
 use tracing::{debug, error, warn};
 
+use super::json_error;
 use crate::bitbucket::classify::{BranchSource, classify};
 use crate::bitbucket::client::strip_response_headers;
 use crate::error::report;
@@ -49,7 +49,7 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
         Ok(classified) => classified,
         Err(unsupported) => {
             warn!(access_token_id = %token.id, method = %request.method(), path, reason = %unsupported, "Denied unsupported request");
-            return bitbucket_error(StatusCode::FORBIDDEN, &unsupported.to_string());
+            return json_error(StatusCode::FORBIDDEN, &unsupported.to_string());
         }
     };
 
@@ -66,7 +66,7 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
     );
     let (inspected, forwarded) = if needs_body {
         let Ok(bytes) = to_bytes(body, MAX_INSPECTED_BODY_LEN).await else {
-            return bitbucket_error(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large");
+            return json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large");
         };
         (Some(bytes.clone()), reqwest::Body::from(bytes))
     } else {
@@ -88,7 +88,7 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
                 %reason,
                 "Denied request"
             );
-            return bitbucket_error(StatusCode::FORBIDDEN, &reason);
+            return json_error(StatusCode::FORBIDDEN, &reason);
         }
         Err(error) => return internal_error(&error),
     };
@@ -117,7 +117,7 @@ pub(super) async fn proxy(State(state): State<AppState>, request: Request) -> Re
         Ok(upstream) => upstream,
         Err(error) => {
             error!(error = report(&error), "Forwarding to Bitbucket failed");
-            return bitbucket_error(StatusCode::BAD_GATEWAY, "Bitbucket is unreachable");
+            return json_error(StatusCode::BAD_GATEWAY, "Bitbucket is unreachable");
         }
     };
 
@@ -154,14 +154,8 @@ fn credentials(headers: &HeaderMap) -> Option<Secret<String>> {
     None
 }
 
-/// An error in the format Bitbucket uses, so that clients report it like any other Bitbucket error.
-fn bitbucket_error(status: StatusCode, message: &str) -> Response {
-    let body = json!({ "errors": [{ "context": null, "message": message, "exceptionName": null }] });
-    (status, axum::Json(body)).into_response()
-}
-
 fn unauthorized(message: &str) -> Response {
-    let mut response = bitbucket_error(StatusCode::UNAUTHORIZED, message);
+    let mut response = json_error(StatusCode::UNAUTHORIZED, message);
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
         HeaderValue::from_static("Basic realm=\"Bitbucket\""),
@@ -171,7 +165,7 @@ fn unauthorized(message: &str) -> Response {
 
 fn internal_error(error: &crate::Error) -> Response {
     error!(error = report(error), "Request failed");
-    bitbucket_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
 }
 
 #[cfg(test)]
@@ -406,8 +400,16 @@ mod tests {
         let missing = Request::get(REPO).body(Body::empty()).unwrap();
         let tampered = request("GET", REPO, &format!("{}x", &token[..token.len() - 1]), None);
         let bitbucket_token = request("GET", REPO, "ATBB-read", None);
+        let management_token = fixture
+            .state
+            .management_token_service
+            .issue("ci", OffsetDateTime::now_utc() + Duration::days(1))
+            .await
+            .unwrap()
+            .token;
+        let management_token = request("GET", REPO, management_token.as_ref(), None);
 
-        for request in [missing, tampered, bitbucket_token] {
+        for request in [missing, tampered, bitbucket_token, management_token] {
             let (status, headers, body) = fixture.send(request).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED);
             assert_eq!(

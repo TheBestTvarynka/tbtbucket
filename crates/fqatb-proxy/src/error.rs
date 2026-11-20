@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::crypto::EncryptError;
 use crate::db::DbError;
-use crate::services::{AccessTokenRejection, BitbucketTokenRejection, PasswordRequirement};
+use crate::services::{AccessTokenRejection, BitbucketTokenRejection, ManagementTokenRejection, PasswordRequirement};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -34,6 +34,9 @@ pub(crate) enum Error {
 
     #[error("invalid access token")]
     InvalidAccessToken(#[source] AccessTokenRejection),
+
+    #[error("invalid management token")]
+    InvalidManagementToken(#[source] ManagementTokenRejection),
 
     #[error("failed to build the HTTP client")]
     HttpClient(#[source] reqwest::Error),

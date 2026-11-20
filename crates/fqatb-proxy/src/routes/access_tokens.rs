@@ -11,15 +11,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{delete, get, post};
 use axum::{Form, Router};
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tracing::info;
 use uuid::Uuid;
 
 use super::auth::AuthSession;
-use super::utc_minutes;
+use super::{LifetimeOption, form_token_expiry, lifetime_options, utc_minutes};
 use crate::db::AccessTokenSummary;
 use crate::policy::{InvalidPattern, Policy, PolicyError, PolicySpec, RuleError, RuleSpec};
-use crate::services::{AccessTokenRejection, MAX_ACCESS_TOKEN_NAME_LEN};
+use crate::services::{AccessTokenRejection, DEFAULT_TOKEN_LIFETIME_DAYS, MAX_ACCESS_TOKEN_NAME_LEN};
 use crate::state::AppState;
 use crate::{Error, Result};
 
@@ -27,10 +27,6 @@ pub(super) const PAGE_PATH: &str = "/webapp/access_tokens";
 const API_PATH: &str = "/fgatbapi/access_tokens";
 const API_TOKEN_PATH: &str = "/fgatbapi/access_tokens/{id}";
 const API_RULE_PATH: &str = "/fgatbapi/access_tokens/rules";
-
-/// Lifetimes offered in the form, in days; no other lifetime is accepted.
-const EXPIRY_PRESETS: [u16; 4] = [1, 7, 30, 90];
-const DEFAULT_EXPIRY: &str = "30";
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -200,7 +196,7 @@ struct IssuedView {
 
 struct FormView {
     name: String,
-    /// One of [`EXPIRY_PRESETS`].
+    /// The lifetime in days, one of [`crate::services::TOKEN_LIFETIMES_DAYS`].
     expiry: String,
     rules: Vec<RuleView>,
 }
@@ -209,32 +205,15 @@ impl FormView {
     fn empty() -> Self {
         Self {
             name: String::new(),
-            expiry: DEFAULT_EXPIRY.to_owned(),
+            expiry: DEFAULT_TOKEN_LIFETIME_DAYS.to_string(),
             // Rule cards appear only once the admin adds one, so that the page stays short when only managing tokens.
             rules: Vec::new(),
         }
     }
 
-    fn expiry_options(&self) -> Vec<ExpiryOption> {
-        EXPIRY_PRESETS
-            .iter()
-            .map(|days| ExpiryOption {
-                value: days.to_string(),
-                label: if *days == 1 {
-                    "1 day".to_owned()
-                } else {
-                    format!("{days} days")
-                },
-                selected: self.expiry == days.to_string(),
-            })
-            .collect()
+    fn expiry_options(&self) -> Vec<LifetimeOption> {
+        lifetime_options(&self.expiry)
     }
-}
-
-struct ExpiryOption {
-    value: String,
-    label: String,
-    selected: bool,
 }
 
 /// A rule card, as typed in the form.
@@ -319,7 +298,7 @@ async fn create(
 ) -> Result<Response> {
     let form = parse_form(fields);
 
-    let validated = expires_at(&form, OffsetDateTime::now_utc())
+    let validated = form_token_expiry(&form.expiry, OffsetDateTime::now_utc())
         .and_then(|expires_at| Ok((build_policy(&form.rules)?, expires_at)));
     let (policy, expires_at) = match validated {
         Ok(validated) => validated,
@@ -459,15 +438,6 @@ fn parse_form(fields: Vec<(String, String)>) -> FormView {
     form
 }
 
-/// Turns the selected lifetime into a timestamp.
-fn expires_at(form: &FormView, now: OffsetDateTime) -> std::result::Result<OffsetDateTime, String> {
-    EXPIRY_PRESETS
-        .iter()
-        .find(|days| days.to_string() == form.expiry)
-        .map(|days| now + Duration::days(i64::from(*days)))
-        .ok_or_else(|| "Choose when the token expires".to_owned())
-}
-
 /// Builds and validates the policy, with messages that point at the rule card to fix.
 fn build_policy(rules: &[RuleView]) -> std::result::Result<Policy, String> {
     if rules.is_empty() {
@@ -514,25 +484,26 @@ fn build_policy(rules: &[RuleView]) -> std::result::Result<Policy, String> {
 
         (!globs.is_empty()).then_some(globs)
     }
+}
 
-    fn rule_error_message(error: RuleError) -> String {
-        match error {
-            RuleError::NoActions => "select at least one action".to_owned(),
-            RuleError::UnknownAction(unknown) => format!("unknown action {}", unknown.0),
-            RuleError::Project(InvalidPattern::Empty) => "enter a project key or pattern".to_owned(),
-            RuleError::Repository(InvalidPattern::Empty) => "enter a repository slug or pattern".to_owned(),
-            RuleError::Project(error) => format!("invalid project: {error}"),
-            RuleError::Repository(error) => format!("invalid repository: {error}"),
-            RuleError::Branch { condition, error } => format!("invalid {condition} branch: {error}"),
-            RuleError::EmptyBranchCondition(condition) => format!("enter at least one {condition} branch pattern"),
-            RuleError::ConditionWithoutActions("branch") => {
-                "the branch pattern only limits branch create and delete; select one of them or clear the pattern"
-                    .to_owned()
-            }
-            RuleError::ConditionWithoutActions(condition) => format!(
-                "{condition} branches only limit pull request and comment actions; select one of them or clear the field"
-            ),
+/// Explains why a rule is invalid, in words that fit both the form and the management API.
+pub(super) fn rule_error_message(error: RuleError) -> String {
+    match error {
+        RuleError::NoActions => "select at least one action".to_owned(),
+        RuleError::UnknownAction(unknown) => format!("unknown action {}", unknown.0),
+        RuleError::Project(InvalidPattern::Empty) => "enter a project key or pattern".to_owned(),
+        RuleError::Repository(InvalidPattern::Empty) => "enter a repository slug or pattern".to_owned(),
+        RuleError::Project(error) => format!("invalid project: {error}"),
+        RuleError::Repository(error) => format!("invalid repository: {error}"),
+        RuleError::Branch { condition, error } => format!("invalid {condition} branch: {error}"),
+        RuleError::EmptyBranchCondition(condition) => format!("enter at least one {condition} branch pattern"),
+        RuleError::ConditionWithoutActions("branch") => {
+            "the branch pattern only limits branch create and delete; select one of them or clear the pattern"
+                .to_owned()
         }
+        RuleError::ConditionWithoutActions(condition) => format!(
+            "{condition} branches only limit pull request and comment actions; select one of them or clear the field"
+        ),
     }
 }
 
@@ -578,7 +549,7 @@ mod tests {
         };
         // The `hidden` attribute comes last; scripts inside the tags mention `.hidden` too.
         let form_hidden = tag(r#"<form id="access-token-form""#).trim_end().ends_with(" hidden");
-        let button_hidden = tag(r#"class="add-access-token""#).trim_end().ends_with("hidden");
+        let button_hidden = tag(r#"class="add-token""#).trim_end().ends_with("hidden");
         assert_ne!(
             form_hidden, button_hidden,
             "exactly one of the form and its button is shown"

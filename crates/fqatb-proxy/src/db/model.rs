@@ -63,6 +63,29 @@ pub(crate) struct AccessToken {
     pub(crate) expires_at: OffsetDateTime,
 }
 
+/// A management token issued by the proxy.
+#[derive(Debug)]
+pub(crate) struct ManagementToken {
+    pub(crate) id: Uuid,
+    /// Unique and immutable after creation.
+    pub(crate) name: String,
+    /// SHA-256 of the random part of the token.
+    pub(crate) secret_hash: [u8; 32],
+    /// Stored in UTC with whole-second precision.
+    pub(crate) created_at: OffsetDateTime,
+    /// Stored in UTC with whole-second precision.
+    pub(crate) expires_at: OffsetDateTime,
+}
+
+/// A management token without its secret hash.
+#[derive(Debug, Clone)]
+pub(crate) struct ManagementTokenSummary {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) created_at: OffsetDateTime,
+    pub(crate) expires_at: OffsetDateTime,
+}
+
 /// An access token without its secret hash and policy.
 #[derive(Debug)]
 pub(crate) struct AccessTokenSummary {

@@ -30,6 +30,9 @@ pub(crate) enum DbError {
     #[error("access token name is already taken")]
     AccessTokenNameTaken,
 
+    #[error("management token name is already taken")]
+    ManagementTokenNameTaken,
+
     #[error("access token refers to a Bitbucket token that does not exist")]
     UnknownBitbucketToken,
 
@@ -123,4 +126,21 @@ pub(crate) trait AccessTokenDb: Send + Sync {
 
     /// Returns the names of the access tokens whose policy uses the Bitbucket token, ordered by name.
     async fn access_tokens_using_bitbucket_token(&self, bitbucket_token_id: Uuid) -> Result<Vec<String>, DbError>;
+}
+
+/// Storage of management tokens, which authenticate the management API.
+pub(crate) trait ManagementTokenDb: Send + Sync {
+    /// Stores the token.
+    ///
+    /// Fails with [`DbError::ManagementTokenNameTaken`] if the name is taken.
+    async fn add_management_token(&self, token: &ManagementToken) -> Result<(), DbError>;
+
+    /// Returns the token, if it exists.
+    async fn management_token(&self, id: Uuid) -> Result<Option<ManagementToken>, DbError>;
+
+    /// Returns all tokens ordered by name, without their secret hashes.
+    async fn management_tokens(&self) -> Result<Vec<ManagementTokenSummary>, DbError>;
+
+    /// Removes the token and returns whether it existed.
+    async fn remove_management_token(&self, id: Uuid) -> Result<bool, DbError>;
 }
