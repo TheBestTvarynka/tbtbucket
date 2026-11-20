@@ -60,7 +60,7 @@ const DEFAULT_ACTION: &str = "repo:read";
 
 /// Actions offered in the form.
 ///
-/// Git-only actions (`branch:push`, `tag:*`) are left out until Git over HTTPS is supported.
+/// Tag actions (`tag:*`) are left out: tags are only changed with Git pushes, which are not forwarded yet.
 const ACTION_GROUPS: &[ActionGroup] = &[
     ActionGroup {
         label: "Repository",
@@ -92,9 +92,17 @@ const ACTION_GROUPS: &[ActionGroup] = &[
                 name: "branch:delete",
                 label: "delete",
             },
+            ActionOption {
+                name: "branch:push",
+                label: "Allow Git",
+            },
         ],
         branch_pattern: true,
-        help: None,
+        help: Some(
+            "Allow Git lets the client push to the branches that match the pattern with Git over HTTPS, \
+             force pushes included. Creating and deleting a branch by pushing also needs create and delete. \
+             The proxy does not forward Git over HTTPS yet; until it does, this option has no effect.",
+        ),
         uncheck_confirmation: None,
     },
     ActionGroup {
@@ -528,7 +536,7 @@ pub(super) fn rule_error_message(error: RuleError) -> String {
         RuleError::Branch { condition, error } => format!("invalid {condition} branch: {error}"),
         RuleError::EmptyBranchCondition(condition) => format!("enter at least one {condition} branch pattern"),
         RuleError::ConditionWithoutActions("branch") => {
-            "the branch pattern only limits branch create and delete; select one of them or clear the pattern"
+            "the branch pattern only limits branch create, delete and Git pushes; select one of them or clear the pattern"
                 .to_owned()
         }
         RuleError::ConditionWithoutActions(condition) => format!(
@@ -944,7 +952,6 @@ mod tests {
         );
         assert!(card.contains("Uncheck it anyway?"));
 
-        assert_eq!(card.matches(r#"class="help-icon""#).count(), 1);
         assert!(card.contains(r#"data-tooltip="Most clients read before they change anything"#));
     }
 
@@ -973,6 +980,60 @@ mod tests {
         let html = body_text(response).await;
         assert!(!is_checked(&html, "repo:read"));
         assert!(is_checked(&html, "pr:create"));
+    }
+
+    #[tokio::test]
+    async fn git_pushes_are_offered_with_branch_actions() {
+        let (app, state, cookie) = setup_logged_in().await;
+        let token = add_bitbucket_token(&state, "write").await.to_string();
+
+        let card = body_text(
+            send(
+                &app,
+                with_cookie(Request::post("/fgatbapi/access_tokens/rules"), &cookie),
+            )
+            .await,
+        )
+        .await;
+        let branches_row = card
+            .split(r#"<div class="action-group">"#)
+            .find(|row| row.contains("Branches"))
+            .unwrap();
+        assert!(branches_row.contains(r#"value="branch:push""#));
+        assert!(branches_row.contains("> Allow Git</label>"));
+        assert!(branches_row.contains(r#"data-tooltip="Allow Git lets the client push to the branches that match the pattern with Git over HTTPS, force pushes included."#));
+        assert!(!is_checked(&card, "branch:push"));
+        assert_eq!(card.matches(r#"class="help-icon""#).count(), 2);
+
+        // A rule with only Git pushes is valid, and the branch pattern limits it.
+        let response = send(
+            &app,
+            create_request(
+                &cookie,
+                &[
+                    ("name", "pusher"),
+                    ("expiry", "7"),
+                    ("rule.g.bitbucket_token", &token),
+                    ("rule.g.project", "PROJ"),
+                    ("rule.g.repository", "api"),
+                    ("rule.g.actions", "branch:push"),
+                    ("rule.g.branch", "bot/**"),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let token = issued_token(&body_text(response).await).to_owned();
+        let policy = state
+            .access_token_service
+            .authenticate(&token)
+            .await
+            .unwrap()
+            .unwrap()
+            .policy;
+        let policy = serde_json::to_value(&policy).unwrap();
+        assert_eq!(policy["rules"][0]["actions"], serde_json::json!(["branch:push"]));
+        assert_eq!(policy["rules"][0]["branches"]["branch"], serde_json::json!(["bot/**"]));
     }
 
     #[tokio::test]

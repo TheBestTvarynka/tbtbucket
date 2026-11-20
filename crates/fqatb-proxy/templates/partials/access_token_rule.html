@@ -42,8 +42,8 @@
         class="branch-pattern"
         name="rule.{{ rule.key }}.branch"
         value="{{ rule.branch }}"
-        placeholder="only branches matching, e.g. bot/**"
-        aria-label="Branches that create and delete apply to"
+        placeholder="branch pattern, e.g. bot/**"
+        aria-label="Branches that create, delete and Git pushes apply to"
         autocomplete="off"
       >
       {% endif %}
@@ -64,7 +64,7 @@
   </div>
   <small class="rule-hint">
     Branch patterns are optional and comma-separated; <code>*</code> stays within one <code>/</code> segment, <code>**</code> crosses them.
-    The pattern next to Branches limits branch create and delete.
+    The pattern next to Branches limits branch create, delete and Git pushes.
     Source and target branches limit pull request and PR comment actions.
     Reading is never limited by branches.
   </small>
