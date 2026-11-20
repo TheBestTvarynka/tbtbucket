@@ -196,26 +196,42 @@
         margin-bottom: 0.5rem;
       }
 
+      /* One row per action group: the label column is as wide as the longest label, so labels never wrap. */
       .action-groups {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.25rem 0.75rem;
+        align-items: center;
         margin-block: 0.25rem 0.75rem;
       }
 
       .action-group {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 0.25rem 1rem;
-        margin-bottom: 0.25rem;
+        display: contents;
       }
 
       .action-group-label {
-        width: 7rem;
         font-weight: 600;
+        white-space: nowrap;
+      }
+
+      /* Checkboxes stay on one line on wide screens and only wrap, a whole checkbox at a time, on narrow ones. */
+      .action-group-options {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem 0.5rem;
+        min-height: 2.25rem;
       }
 
       .action-group label {
         margin: 0;
         font-size: var(--fgatb-control-font-size);
+        white-space: nowrap;
+      }
+
+      /* Closer to its own word than to the previous one, so each checkbox reads as part of its label. */
+      .action-group input[type=checkbox] {
+        margin-inline-end: 0.125rem;
       }
 
       .action-group-note {
@@ -291,6 +307,16 @@
         .token-meta,
         .rule-grid {
           grid-template-columns: 1fr;
+        }
+
+        /* Each action group's label goes above its checkboxes, leaving them the full width. */
+        .action-groups {
+          grid-template-columns: 1fr;
+          row-gap: 0;
+        }
+
+        .action-group-options {
+          margin-bottom: 0.5rem;
         }
       }
 

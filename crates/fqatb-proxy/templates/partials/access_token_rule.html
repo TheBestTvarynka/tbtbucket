@@ -24,6 +24,7 @@
     {% for group in action_groups %}
     <div class="action-group">
       <span class="action-group-label">{{ group.label }}</span>
+      <div class="action-group-options">
       {% for action in group.actions %}
       <label><input type="checkbox" name="rule.{{ rule.key }}.actions" value="{{ action.name }}"{% if rule.has_action(action.name) %} checked{% endif %}> {{ action.label }}</label>
       {% endfor %}
@@ -38,6 +39,7 @@
         autocomplete="off"
       >
       {% endif %}
+      </div>
     </div>
     {% endfor %}
   </div>
