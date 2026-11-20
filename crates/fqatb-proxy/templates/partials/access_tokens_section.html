@@ -15,7 +15,16 @@
   {% if bitbucket_tokens.is_empty() %}
   <p>Add a Bitbucket token on <a href="/webapp/bitbucket_tokens">/bitbucket_tokens</a> before issuing access tokens: every rule forwards requests with one.</p>
   {% else %}
-  <form hx-post="/fgatbapi/access_tokens" hx-target="#access-tokens" hx-swap="outerHTML">
+  {# The form stays open only to show what was wrong with a rejected attempt. #}
+  {% let open = error.is_some() %}
+  <button
+    type="button"
+    class="add-access-token"
+    hx-on:click="this.hidden = true; const form = document.getElementById('access-token-form'); form.hidden = false; form.elements.namedItem('name').focus()"
+    {% if open %}hidden{% endif %}
+  >Add access token</button>
+
+  <form id="access-token-form" hx-post="/fgatbapi/access_tokens" hx-target="#access-tokens" hx-swap="outerHTML"{% if !open %} hidden{% endif %}>
     <div class="token-meta">
       <label>
         Name
@@ -48,7 +57,14 @@
     >Add rule</button>
 
     {% if let Some(error) = error %}<small class="form-error">{{ error }}</small>{% endif %}
-    <button type="submit">Create access token</button>
+    <div class="form-actions">
+      <button type="submit">Create access token</button>
+      <button
+        type="button"
+        class="secondary outline"
+        hx-on:click="const form = this.closest('form'); form.elements.namedItem('name').value = ''; form.elements.namedItem('expiry').value = '{{ crate::routes::access_tokens::DEFAULT_EXPIRY }}'; document.getElementById('rule-cards').replaceChildren(); form.querySelector('.form-error')?.remove(); form.hidden = true; document.querySelector('.add-access-token').hidden = false"
+      >Cancel</button>
+    </div>
   </form>
   {% endif %}
 

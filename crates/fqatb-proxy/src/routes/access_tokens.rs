@@ -570,6 +570,22 @@ mod tests {
         &html[start..start + end]
     }
 
+    /// Whether the creation form is shown, and the button that opens it hidden.
+    fn form_is_open(html: &str) -> bool {
+        let tag = |start: &str| {
+            let start = html.find(start).expect("the element is rendered");
+            &html[start..start + html[start..].find('>').unwrap()]
+        };
+        // The `hidden` attribute comes last; scripts inside the tags mention `.hidden` too.
+        let form_hidden = tag(r#"<form id="access-token-form""#).trim_end().ends_with(" hidden");
+        let button_hidden = tag(r#"class="add-access-token""#).trim_end().ends_with("hidden");
+        assert_ne!(
+            form_hidden, button_hidden,
+            "exactly one of the form and its button is shown"
+        );
+        !form_hidden
+    }
+
     #[tokio::test]
     async fn page_requires_session() {
         let (app, _state) = setup().await;
@@ -600,6 +616,8 @@ mod tests {
 
         let html = body_text(send(&app, with_cookie(Request::get("/webapp/access_tokens"), &cookie)).await).await;
         assert!(html.contains(r#"hx-post="/fgatbapi/access_tokens""#));
+        assert!(html.contains(">Add access token</button>"));
+        assert!(!form_is_open(&html), "the form opens with Add access token");
         // Rule cards only appear once the admin adds one.
         assert!(!html.contains(r#"class="rule-card""#));
         assert!(html.contains("Add a rule to choose what the token allows."));
@@ -646,6 +664,7 @@ mod tests {
         assert_eq!(html.matches(&token).count(), 1);
         assert!(html.contains("<td>release-bot</td>"));
         assert!(html.contains(r#"value="""#), "the form is cleared");
+        assert!(!form_is_open(&html), "the form closes once the token is issued");
 
         let authenticated = state.access_token_service.authenticate(&token).await.unwrap().unwrap();
         assert_eq!(authenticated.name, "release-bot");
@@ -699,6 +718,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{message}");
             let html = body_text(response).await;
             assert!(html.contains(message), "{message}: {html}");
+            assert!(form_is_open(&html), "{message}: the form stays open to show the error");
             assert!(!html.contains("fgatb_"));
             if fields.iter().any(|(key, _)| key.starts_with("rule.")) {
                 assert!(html.contains(r#"name="rule.k1.project" value="PROJ""#), "{message}");
