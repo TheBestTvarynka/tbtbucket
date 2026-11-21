@@ -1,8 +1,59 @@
-# fgat-bitbucket
+# `tbtbucket`
 
-Missing fine-frained access tokens for Bitckuket
+[![Human in the Loop](https://madebyhuman.iamjarl.com/badges/loop-white.svg)](https://madebyhuman.iamjarl.com)
 
-## Running
+Missing fine-frained access tokens for Bitbucket.
+
+- [`tbtbucket`](#tbtbucket)
+  - [Motivation](#motivation)
+  - [How it works](#how-it-works)
+  - [Usage](#usage)
+  - [DBFL](#bdfl)
+
+## Motivation
+
+> [!TIP]
+> The software security system is only as secure as its weakest components.
+
+> [!IMPORTANT]
+> The principle of least privilege (PoLP) requires every user, program, or process to receive only the minimum access rights and resources needed to complete a task.
+
+When I assign a task to the agent, I don't want it to have write access to the entire repo or multiple repos unless it really needs it.
+GitHub has a wonderful feature called [fine-grained personal access tokens](https://github.com/settings/personal-access-tokens): they allow you to precisely specify what permissions the access token has, what it can do, and what it can't do.
+You can even choose a separate repo and allow only a subset of actions.
+
+Unfortunately, Bitbucket doesn't offer fine-grained access tokens.
+It only lets you generate a read-only, write, or admin HTTP token for your account.
+This token will have the same access scope as your account.
+Alternatively, it also allows you to generate a repo-wide token.
+You may have write access to the repo but not permission to generate repo HTTP tokens.
+
+This project aims to solve this problem.
+The `tbtbucket` proxy is placed between your agents or any other Bitbucket REST API client and intercepts REST API requests or Git (over HTTP) operations.
+It verifies the request by checking the provided access token for sufficient permissions.
+Read more about it below.
+
+## How it works
+
+![](./docs/images/how-it-works.png)
+
+1. First, the user generates a real personal BitBucket token on their BitBucket profile page and saves it in the proxy settings (there is a web app for that).
+2. Next, the user requests (via the web app or the proxy API) an access token for their agent.
+   When requesting an access token, the user specifies allowed permissions, resources, and which Bitbucket token to use.
+   The user can add many permission rules to one access token.
+3. The copied access token is provided to the agent in any suitable way: environment variable, configuration file, etc.
+  From the outside, this token is no different from a Bitbucket or GitHub authorization bearer token.
+4. The agent/`git`/API client uses this token when making BitBucket-like REST API calls to the proxy.
+5. The proxy checks the request against permissions provided by the access token. If the request is allowed, it is forwarded to the real BitBucket server.
+6. The Bitbucket response is sent back to the agent/`git`/API client.
+
+The permissions configuration is highly flexible.
+The user can configure which branches are allowed for pushing/creating PRs.
+Better to see once than hear a hundred times:
+
+![](./docs/images/access-token-rule-form.png)
+
+## Usage
 
 The proxy is configured through environment variables:
 
@@ -21,54 +72,14 @@ The proxy is configured through environment variables:
 FQATB_ENCRYPTION_KEY=$(openssl rand -hex 32) FQATB_BITBUCKET_URL=https://bitbucket.example.com cargo run
 ```
 
-Keep the encryption key: losing or changing it invalidates every encrypted value in the database and every access token.
+Webapp instructions, tokens generation, and more are covered in [`USAGE.md`](./docs/USAGE.md).
 
-### TLS
+## BDFL
 
-The proxy terminates TLS itself, with HTTP/2 and HTTP/1.1, when both `FQATB_TLS_CERT` and `FQATB_TLS_KEY` are set:
+Have you heard of [BDFL](https://en.m.wikipedia.org/wiki/Benevolent_dictator_for_life)?
 
-```bash
-FQATB_TLS_CERT=/etc/fqatb/fullchain.pem FQATB_TLS_KEY=/etc/fqatb/privkey.pem FQATB_LISTEN_ADDR=0.0.0.0:443 ... cargo run
-```
+TL;DR:
 
-Send the process `SIGHUP` after renewing the certificate to load the new files without a restart.
-If they fail to load, the error is logged and the current certificate stays in use.
+> **Benevolent dictator for life (BDFL)** is a title given to a small number of open-source software development leaders, typically project founders who retain the final say in disputes or arguments within the community.
 
-Without them the proxy serves plain HTTP and warns about it on start-up.
-Use that only for local development: clients would send access tokens and the admin password in clear text.
-Setting only one of the two variables is an error.
-
-The admin panel is served under `/webapp/`; its home page is `/webapp/management_tokens`.
-On first start-up, open `/webapp/signup` to set the admin password, then log in with it at `/webapp/login`.
-Until the password is set, anyone who can reach the panel can claim it, so keep the proxy private until then.
-Its actions are served under `/fgatbapi/`, for example Bitbucket token management at `/webapp/bitbucket_tokens`.
-The session cookie covers both prefixes, so it is scoped to `/`.
-It is marked `Secure`, so browsers only keep it over HTTPS, or over plain HTTP when the panel is opened as `localhost`.
-
-## Access tokens
-
-1. Add one or more Bitbucket HTTP access tokens at `/webapp/bitbucket_tokens`.
-   They are stored encrypted and only ever sent to the Bitbucket server, never to clients.
-2. Issue an access token at `/webapp/access_tokens`.
-   Each rule grants actions on matching projects and repositories, optionally only for matching branches, and names the Bitbucket token that carries out the requests it allows.
-   The token is shown once, right after it is issued.
-3. Point the Bitbucket client at the proxy instead of the Bitbucket server, and give it the access token where it would take a Bitbucket HTTP access token, either as `Authorization: Bearer fgatb_…` or as the password of Basic authentication.
-
-Git works the same way: use the proxy in the clone URL, such as `https://proxy.example.com/scm/PROJ/repo.git`, and give the access token as the password when Git asks.
-Cloning and fetching need Repository: read; pushing to branches needs Allow Git together with create and delete.
-For CI, `git -c http.extraHeader="Authorization: Bearer fgatb_…" clone …` passes the token without a prompt.
-
-Everything outside `/webapp/`, `/fgatbapi/` and `/health` is the Bitbucket-compatible API.
-Requests that the token does not allow, or that the proxy does not support yet, are denied with Bitbucket's error format.
-Removing a Bitbucket token also removes every access token that uses it.
-
-See [`docs/access-model.md`](docs/access-model.md) for the token format, the rule format and the supported endpoints.
-
-## Management API
-
-Scripts can manage Bitbucket tokens and access tokens without the admin panel, through the JSON API under `/fgatbapi/v1/`.
-
-1. Issue a management token at `/webapp/management_tokens`; it is shown once, right after it is issued.
-2. Send it as `Authorization: Bearer fgatbm_…` to list, add and remove Bitbucket tokens at `/fgatbapi/v1/bitbucket_tokens` and access tokens at `/fgatbapi/v1/access_tokens`.
-
-See [`docs/management-api.md`](docs/management-api.md) for every endpoint, with examples.
+For the `tbtbucket` project, the BDFL is [@TheBestTvarynka (Pavlo Myroniuk)](https://github.com/TheBestTvarynka), the original creator of Grafily.
