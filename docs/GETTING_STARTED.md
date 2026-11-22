@@ -38,3 +38,5 @@ FQATB_ENCRYPTION_KEY=$(openssl rand -hex 32) FQATB_BITBUCKET_URL=https://bitbuck
 3. On the first run (and only on the first one), the proxy will ask to create the password.
    It is the admin password for accessing the admin panel (proxy webapp).
 4. After succesfull login, you can start configuring your Bitbucket and access tokens.
+
+Continue with [`USAGE.md`](USAGE.md) to configure Bitbucket tokens and access tokens, and to point clients and Git at the proxy.
