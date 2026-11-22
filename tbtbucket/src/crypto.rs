@@ -26,11 +26,11 @@ const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const HEADER_LEN: usize = 1 /* FormatVersion */ + NONCE_LEN;
 
-const KEY_INFO: &[u8] = b"fqatb-proxy AES-256-GCM key";
+const KEY_INFO: &[u8] = b"tbtbucket AES-256-GCM key";
 
-const TOKEN_MAC_KEY_INFO: &[u8] = b"fqatb-proxy access token HMAC-SHA256 key";
+const TOKEN_MAC_KEY_INFO: &[u8] = b"tbtbucket access token HMAC-SHA256 key";
 
-const MANAGEMENT_TOKEN_MAC_KEY_INFO: &[u8] = b"fqatb-proxy management token HMAC-SHA256 key";
+const MANAGEMENT_TOKEN_MAC_KEY_INFO: &[u8] = b"tbtbucket management token HMAC-SHA256 key";
 
 /// Length of a token tag in bytes.
 pub(crate) const TOKEN_TAG_LEN: usize = 32;
