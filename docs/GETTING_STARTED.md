@@ -31,6 +31,21 @@ The proxy is configured through environment variables:
 FGATB_ENCRYPTION_KEY=$(openssl rand -hex 32) FGATB_BITBUCKET_URL=https://bitbucket.example.com cargo run
 ```
 
+### TLS
+
+The proxy terminates TLS itself, with HTTP/2 and HTTP/1.1, when both `FGATB_TLS_CERT` and `FGATB_TLS_KEY` are set:
+
+```bash
+FGATB_TLS_CERT=/etc/tbtbucket/fullchain.pem FGATB_TLS_KEY=/etc/tbtbucket/privkey.pem FGATB_LISTEN_ADDR=0.0.0.0:443 ... cargo run
+```
+
+Send the process `SIGHUP` after renewing the certificate to load the new files without a restart.
+If they fail to load, it logs the error and keeps the current certificate in use.
+
+Without them, the proxy serves plain HTTP and warns about it on start-up.
+Use that only for local development: clients would send access tokens and the admin password in clear text.
+Setting only one of the two variables is an error.
+
 ## The very first run
 
 1. Start the proxy.
