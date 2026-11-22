@@ -348,9 +348,10 @@ mod tests {
             .await;
 
         let mut request = request("GET", &format!("{REPO}/pull-requests?state=OPEN&limit=5"), &token, None);
-        request
-            .headers_mut()
-            .insert(header::COOKIE, "tbtbucket_session=admin-session; other=1".parse().unwrap());
+        request.headers_mut().insert(
+            header::COOKIE,
+            "tbtbucket_session=admin-session; other=1".parse().unwrap(),
+        );
         let (status, headers, body) = fixture.send(request).await;
 
         assert_eq!(status, StatusCode::CREATED);
