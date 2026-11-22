@@ -1,24 +1,5 @@
 # Usage
 
-The proxy is configured through environment variables:
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `FQATB_ENCRYPTION_KEY` | yes | 32-byte master key as 64 hex characters, for example from `openssl rand -hex 32`. The database and session encryption keys and the access token signing key are derived from it. |
-| `FQATB_BITBUCKET_URL` | yes | Base URL of the Bitbucket Data Center server that requests are forwarded to, such as `https://bitbucket.example.com`. |
-| `FQATB_BITBUCKET_CA_CERT` | no | Path to a PEM file with the CA certificates that issued the Bitbucket server's certificate, for a server whose certificate the system does not trust. When set, only these CAs are trusted for Bitbucket. |
-| `FQATB_LISTEN_ADDR` | no | Address to listen on, `127.0.0.1:8080` by default. |
-| `FQATB_TLS_CERT` | no | Path to the PEM certificate chain, leaf certificate first. Set together with `FQATB_TLS_KEY` to serve HTTPS. |
-| `FQATB_TLS_KEY` | no | Path to the PEM private key (PKCS#8, PKCS#1 or SEC1) for `FQATB_TLS_CERT`. |
-| `FQATB_DATABASE_URL` | no | SQLite database URL, `sqlite://fqatb.db` by default. The file is created and migrated on start-up. |
-| `FGATB_LOGGING` | no | Log filter in the [`EnvFilter` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives), `trace` by default. For example, `info` or `info,fqatb_proxy=debug`. |
-
-```bash
-FQATB_ENCRYPTION_KEY=$(openssl rand -hex 32) FQATB_BITBUCKET_URL=https://bitbucket.example.com cargo run
-```
-
-Keep the encryption key: losing or changing it invalidates every encrypted value in the database and every access token.
-
 ## TLS
 
 The proxy terminates TLS itself, with HTTP/2 and HTTP/1.1, when both `FQATB_TLS_CERT` and `FQATB_TLS_KEY` are set:
