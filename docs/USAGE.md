@@ -5,7 +5,7 @@
 The proxy terminates TLS itself, with HTTP/2 and HTTP/1.1, when both `FGATB_TLS_CERT` and `FGATB_TLS_KEY` are set:
 
 ```bash
-FGATB_TLS_CERT=/etc/fqatb/fullchain.pem FGATB_TLS_KEY=/etc/fqatb/privkey.pem FGATB_LISTEN_ADDR=0.0.0.0:443 ... cargo run
+FGATB_TLS_CERT=/etc/tbtbucket/fullchain.pem FGATB_TLS_KEY=/etc/tbtbucket/privkey.pem FGATB_LISTEN_ADDR=0.0.0.0:443 ... cargo run
 ```
 
 Send the process `SIGHUP` after renewing the certificate to load the new files without a restart.
