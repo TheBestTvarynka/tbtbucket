@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+
+      # Releases come from annotated tags only. The checkout leaves the tag lightweight, so it is fetched again first.
+      - name: Check that the tag is annotated
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
+            echo "::error::$tag is a lightweight tag; releases are made from annotated tags"
+            exit 1
+          fi
+
+      # Installs the toolchain that rust-toolchain.toml pins.
+      - run: rustup toolchain install
+
+      - name: Build
+        run: |
+          cargo build --release --locked
+          mkdir dist
+          cp target/release/tbtbucket dist/tbtbucket-x86_64-unknown-linux-gnu
+
+      - name: Attest artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/tbtbucket-x86_64-unknown-linux-gnu
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            --verify-tag \
+            dist/tbtbucket-x86_64-unknown-linux-gnu
