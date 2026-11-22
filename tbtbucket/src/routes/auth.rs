@@ -13,7 +13,7 @@ use crate::db::Session;
 use crate::services::SESSION_TTL;
 use crate::state::AppState;
 
-pub(super) const COOKIE_NAME: &str = "fqatb_session";
+pub(super) const COOKIE_NAME: &str = "tbtbucket_session";
 
 /// The session cookie is sent to the admin panel pages and to their API, which live under different prefixes.
 ///

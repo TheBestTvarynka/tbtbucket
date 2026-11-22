@@ -157,7 +157,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         for (name, value) in [
             ("authorization", "Bearer fgatb_x"),
-            ("cookie", "fqatb_session=abc; other=1"),
+            ("cookie", "tbtbucket_session=abc; other=1"),
             ("host", "proxy.example.com"),
             ("content-length", "12"),
             ("connection", "keep-alive, x-trace"),
