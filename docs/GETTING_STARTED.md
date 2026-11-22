@@ -25,7 +25,7 @@ The proxy is configured through environment variables:
 | `FGATB_TLS_CERT` | no | Path to the PEM certificate chain, leaf certificate first. Set together with `FGATB_TLS_KEY` to serve HTTPS. |
 | `FGATB_TLS_KEY` | no | Path to the PEM private key (PKCS#8, PKCS#1 or SEC1) for `FGATB_TLS_CERT`. |
 | `FGATB_DATABASE_URL` | no | SQLite database URL, `sqlite://fqatb.db` by default. The file is created and migrated on start-up. |
-| `FGATB_LOGGING` | no | Log filter in the [`EnvFilter` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives), `trace` by default. For example, `info` or `info,fqatb_proxy=debug`. |
+| `FGATB_LOGGING` | no | Log filter in the [`EnvFilter` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives), `trace` by default. For example, `info` or `info,tbtbucket=debug`. |
 
 ```bash
 FGATB_ENCRYPTION_KEY=$(openssl rand -hex 32) FGATB_BITBUCKET_URL=https://bitbucket.example.com cargo run

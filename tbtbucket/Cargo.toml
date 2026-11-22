@@ -1,5 +1,5 @@
 [package]
-name = "fqatb-proxy"
+name = "tbtbucket"
 version = "0.1.0"
 description = "Proxy that enforces fine-grained access tokens for Bitbucket"
 edition.workspace = true

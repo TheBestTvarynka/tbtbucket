@@ -714,44 +714,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fqatb-proxy"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "askama",
- "askama_web",
- "axum",
- "axum-extra",
- "axum-server",
- "base64 0.23.1",
- "futures-util",
- "getrandom 0.4.3",
- "globset",
- "hex",
- "hkdf",
- "hmac",
- "http-body-util",
- "percent-encoding",
- "reqwest",
- "secret",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "subtle",
- "thiserror",
- "time",
- "tokio",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "fs-err"
 version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2343,6 +2305,44 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "tbtbucket"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "askama",
+ "askama_web",
+ "axum",
+ "axum-extra",
+ "axum-server",
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.4.3",
+ "globset",
+ "hex",
+ "hkdf",
+ "hmac",
+ "http-body-util",
+ "percent-encoding",
+ "reqwest",
+ "secret",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
