@@ -33,7 +33,7 @@ fgatb_<base64url(id ‖ secret ‖ tag)>
 
 The payload is 80 bytes, encoded as unpadded URL-safe base64 (107 characters), so a token is 113 characters long.
 
-`token_mac_key` is derived from the master key (`FQATB_ENCRYPTION_KEY`) with HKDF-SHA256, using its own hardcoded salt, like the database and session ciphers.
+`token_mac_key` is derived from the master key (`FGATB_ENCRYPTION_KEY`) with HKDF-SHA256, using its own hardcoded salt, like the database and session ciphers.
 Changing the master key therefore invalidates every access token, as it invalidates all other encrypted data.
 
 ### Verification
@@ -295,7 +295,7 @@ The other bodies stream through without being read.
 
 ### Forwarding
 
-An allowed request is forwarded to the server at `FQATB_BITBUCKET_URL`, with its path and query unchanged, and with these changes:
+An allowed request is forwarded to the server at `FGATB_BITBUCKET_URL`, with its path and query unchanged, and with these changes:
 
 - `Authorization` is replaced with `Bearer <Bitbucket token>` of the chosen rule;
 - the `Cookie` header is removed entirely, which drops the admin session cookie if a browser sent one;

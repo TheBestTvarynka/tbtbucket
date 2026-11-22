@@ -13,17 +13,17 @@ const DEFAULT_DATABASE_URL: &str = "sqlite://fqatb.db";
 
 /// Settings read from the environment at start-up.
 pub(crate) struct Config {
-    /// `FQATB_LISTEN_ADDR`.
+    /// `FGATB_LISTEN_ADDR`.
     pub(crate) listen_addr: SocketAddr,
-    /// `FQATB_DATABASE_URL`.
+    /// `FGATB_DATABASE_URL`.
     pub(crate) database_url: String,
-    /// `FQATB_ENCRYPTION_KEY`, given as 64 hex characters.
+    /// `FGATB_ENCRYPTION_KEY`, given as 64 hex characters.
     pub(crate) encryption_key: Secret<[u8; KEY_LEN]>,
-    /// `FQATB_BITBUCKET_URL`, the base URL of the Bitbucket Data Center server, such as `https://bitbucket.example.com`.
+    /// `FGATB_BITBUCKET_URL`, the base URL of the Bitbucket Data Center server, such as `https://bitbucket.example.com`.
     pub(crate) bitbucket_url: Url,
-    /// `FQATB_BITBUCKET_CA_CERT`: when set, the only CAs trusted for the Bitbucket server's certificate.
+    /// `FGATB_BITBUCKET_CA_CERT`: when set, the only CAs trusted for the Bitbucket server's certificate.
     pub(crate) bitbucket_ca_certs: Option<Vec<Certificate>>,
-    /// `FQATB_TLS_CERT` and `FQATB_TLS_KEY`; without them the proxy serves plain HTTP.
+    /// `FGATB_TLS_CERT` and `FGATB_TLS_KEY`; without them the proxy serves plain HTTP.
     pub(crate) tls: Option<TlsConfig>,
 }
 
@@ -44,8 +44,8 @@ impl TlsConfig {
                 key_path: key_path.into(),
             })),
             (None, None) => Ok(None),
-            (Some(_), None) => anyhow::bail!("FQATB_TLS_CERT is set but FQATB_TLS_KEY is not"),
-            (None, Some(_)) => anyhow::bail!("FQATB_TLS_KEY is set but FQATB_TLS_CERT is not"),
+            (Some(_), None) => anyhow::bail!("FGATB_TLS_CERT is set but FGATB_TLS_KEY is not"),
+            (None, Some(_)) => anyhow::bail!("FGATB_TLS_KEY is set but FGATB_TLS_CERT is not"),
         }
     }
 }
@@ -63,42 +63,42 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Self> {
-        let listen_addr = env::var("FQATB_LISTEN_ADDR")
+        let listen_addr = env::var("FGATB_LISTEN_ADDR")
             .as_deref()
             .unwrap_or(DEFAULT_LISTEN_ADDR)
             .parse()
-            .context("invalid FQATB_LISTEN_ADDR")?;
+            .context("invalid FGATB_LISTEN_ADDR")?;
 
-        let database_url = env::var("FQATB_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
+        let database_url = env::var("FGATB_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
 
         let encryption_key = {
-            let hex_key = Secret::new(env::var("FQATB_ENCRYPTION_KEY").context("FQATB_ENCRYPTION_KEY is not set")?);
+            let hex_key = Secret::new(env::var("FGATB_ENCRYPTION_KEY").context("FGATB_ENCRYPTION_KEY is not set")?);
             let mut key = Secret::new([0; KEY_LEN]);
             hex::decode_to_slice(hex_key.as_ref().trim(), key.as_mut())
-                .context("FQATB_ENCRYPTION_KEY must be exactly 64 hex characters")?;
+                .context("FGATB_ENCRYPTION_KEY must be exactly 64 hex characters")?;
             key
         };
 
         let bitbucket_url = {
-            let text = env::var("FQATB_BITBUCKET_URL").context("FQATB_BITBUCKET_URL is not set")?;
-            let url = Url::parse(text.trim()).context("invalid FQATB_BITBUCKET_URL")?;
+            let text = env::var("FGATB_BITBUCKET_URL").context("FGATB_BITBUCKET_URL is not set")?;
+            let url = Url::parse(text.trim()).context("invalid FGATB_BITBUCKET_URL")?;
             anyhow::ensure!(
                 matches!(url.scheme(), "http" | "https") && url.query().is_none() && url.fragment().is_none(),
-                "FQATB_BITBUCKET_URL must be an http or https URL without a query or fragment"
+                "FGATB_BITBUCKET_URL must be an http or https URL without a query or fragment"
             );
             url
         };
 
-        let bitbucket_ca_certs = non_empty(env::var("FQATB_BITBUCKET_CA_CERT").ok())
+        let bitbucket_ca_certs = non_empty(env::var("FGATB_BITBUCKET_CA_CERT").ok())
             .map(|path| {
                 load_ca_certs(
-                    &std::fs::read(&path).with_context(|| format!("failed to read FQATB_BITBUCKET_CA_CERT {path}"))?,
+                    &std::fs::read(&path).with_context(|| format!("failed to read FGATB_BITBUCKET_CA_CERT {path}"))?,
                 )
-                .with_context(|| format!("invalid FQATB_BITBUCKET_CA_CERT {path}"))
+                .with_context(|| format!("invalid FGATB_BITBUCKET_CA_CERT {path}"))
             })
             .transpose()?;
 
-        let tls = TlsConfig::from_paths(env::var("FQATB_TLS_CERT").ok(), env::var("FQATB_TLS_KEY").ok())?;
+        let tls = TlsConfig::from_paths(env::var("FGATB_TLS_CERT").ok(), env::var("FGATB_TLS_KEY").ok())?;
 
         Ok(Self {
             listen_addr,

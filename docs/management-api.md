@@ -10,7 +10,7 @@ A token is shown once, right after it is issued, and cannot be recovered afterwa
 Removing it on the same page revokes it immediately.
 
 A management token looks like an access token with a different prefix: `fgatbm_` followed by unpadded URL-safe base64 of `id (16) ‖ secret (32) ‖ HMAC-SHA256(id ‖ secret) (32)`.
-It is signed with its own key, derived from `FQATB_ENCRYPTION_KEY` with a salt of its own, so a management token never passes for an access token and the other way round.
+It is signed with its own key, derived from `FGATB_ENCRYPTION_KEY` with a salt of its own, so a management token never passes for an access token and the other way round.
 Like access tokens, only the SHA-256 of the secret is stored, in the `management_tokens` table, so the database alone never yields a working token.
 
 ## Authentication

@@ -49,7 +49,7 @@ pub(crate) async fn serve(router: Router, listen_addr: SocketAddr, tls: Option<&
         }
         None => {
             warn!(
-                "FQATB_TLS_CERT and FQATB_TLS_KEY are not set, serving plain HTTP; use it only for local development"
+                "FGATB_TLS_CERT and FGATB_TLS_KEY are not set, serving plain HTTP; use it only for local development"
             );
 
             tokio::spawn(log_listening(handle.clone(), "http"));
