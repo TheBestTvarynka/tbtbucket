@@ -24,7 +24,7 @@ rustc-ice-*.txt
 #.idea/
 
 # Local SQLite database created by the proxy with default settings
-fqatb.db*
+tbtbucket.db*
 
 # Local TLS certificates and private keys
 certs/

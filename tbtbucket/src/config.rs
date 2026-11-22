@@ -9,7 +9,7 @@ use secret::Secret;
 use crate::crypto::KEY_LEN;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
-const DEFAULT_DATABASE_URL: &str = "sqlite://fqatb.db";
+const DEFAULT_DATABASE_URL: &str = "sqlite://tbtbucket.db";
 
 /// Settings read from the environment at start-up.
 pub(crate) struct Config {
